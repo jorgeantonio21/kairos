@@ -1,0 +1,5 @@
+[workspace]
+resolver = "3"
+members = ["p2p", "consensus", "crypto", "storage", "utils"]
+
+[workspace.dependencies]

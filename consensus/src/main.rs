@@ -71,8 +71,7 @@ impl BlsSecretKey {
         let hash_bytes = hash.as_bytes();
         let hash_fr = Fr::from_le_bytes_mod_order(hash_bytes);
         let g1 = G1Projective::generator();
-        let hash_point = g1 * hash_fr;
-        hash_point
+        g1 * hash_fr
     }
 }
 
@@ -96,8 +95,7 @@ impl BlsPublicKey {
         let hash_bytes = hash.as_bytes();
         let hash_fr = Fr::from_le_bytes_mod_order(hash_bytes);
         let g1 = G1Projective::generator();
-        let hash_point = g1 * hash_fr;
-        hash_point
+        g1 * hash_fr
     }
 
     /// Aggregate multiple public keys into a single public key
@@ -135,7 +133,7 @@ impl BlsPublicKey {
         assert_eq!(public_keys.len(), messages.len());
         assert_eq!(public_keys.len(), signatures.len());
 
-        if public_keys.len() == 0 {
+        if public_keys.is_empty() {
             return true;
         }
 

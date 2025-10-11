@@ -1,4 +1,4 @@
-use rkyv::{Archive, Deserialize, Serialize, with::Skip};
+use rkyv::{Archive, Deserialize, Serialize};
 use std::{hash::Hash, hash::Hasher};
 
 use crate::crypto::{

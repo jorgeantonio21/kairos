@@ -197,18 +197,14 @@ impl AggregatedSignature {
 }
 
 fn main() {
-    let mut public_keys = Vec::with_capacity(3);
-    for _ in 0..3 {
+    let mut public_keys = Vec::with_capacity(100);
+    for _ in 0..100 {
         let secret_key = crate::crypto::aggregated::BlsSecretKey::generate(&mut OsRng);
         let public_key = secret_key.public_key();
         public_keys.push(public_key);
     }
-    let public_keys = [
-        public_keys[0].clone(),
-        public_keys[1].clone(),
-        public_keys[2].clone(),
-    ];
-    let block = crate::state::block::MNotarization::<5, 1, 3> {
+    let public_keys = public_keys.try_into().unwrap();
+    let block = crate::state::block::MNotarization::<100, 1, 100> {
         block: crate::state::block::Block {
             header: crate::state::block::BlockHeader {
                 view: 1,
@@ -218,10 +214,10 @@ fn main() {
             transactions: vec![],
             hash: None,
         },
-        aggregated_signature: crate::crypto::aggregated::AggregatedSignature::<3> {
+        aggregated_signature: crate::crypto::aggregated::AggregatedSignature::<100> {
             aggregated_signature: crate::crypto::aggregated::BlsSignature(G1Affine::zero()),
             public_keys,
-            participant_count: 3,
+            participant_count: 100,
         },
     };
     let mut arena = Arena::new();
@@ -236,7 +232,7 @@ fn main() {
     let end = std::time::Instant::now();
     println!("Access time: {:?}", end - start);
     let start = std::time::Instant::now();
-    let deserialized =
+    let _deserialized =
         deserialize::<MNotarization<5, 1, 3>, Error>(archived).expect("Failed to deserialize");
     let end = std::time::Instant::now();
     println!("Deserialize time: {:?}", end - start);
@@ -271,6 +267,21 @@ fn main() {
     let aggregated_signature = AggregatedSignature::new(&public_keys, message, &signatures)
         .expect("Failed to aggregate signature");
     println!("Aggregated signature: {:?}", aggregated_signature);
+
+    // Time for canonical serialization and deserialization
+    let start = std::time::Instant::now();
+    let mut canonical_serialized = Vec::new();
+    aggregated_signature
+        .serialize_uncompressed(&mut canonical_serialized)
+        .expect("Failed to serialize");
+    let end = std::time::Instant::now();
+    println!("Canonical serialize time: {:?}", end - start);
+    let start = std::time::Instant::now();
+    let _canonical_deserialized =
+        AggregatedSignature::deserialize_uncompressed(&canonical_serialized[..])
+            .expect("Failed to deserialize");
+    let end = std::time::Instant::now();
+    println!("Canonical deserialize time: {:?}", end - start);
 
     let verified = aggregated_signature.verify(message);
     println!("Verified: {}", verified);

@@ -1,4 +1,3 @@
-use crate::crypto::conversions::ArkSerdeWrapper;
 use ark_bls12_381::{Bls12_381, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, pairing::Pairing};
 use ark_ff::{PrimeField, UniformRand, Zero};

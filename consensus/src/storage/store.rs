@@ -317,7 +317,7 @@ mod tests {
             let tx = Transaction::new(pk.clone(), [7u8; 32], 42, 9, 1_000, 3, tx_hash, sig);
 
             let parent: [u8; blake3::OUT_LEN] = [1u8; blake3::OUT_LEN];
-            let block = Block::new(5, parent, vec![tx], 123456, false, 1);
+            let block = Block::new(5, 0, parent, vec![tx], 123456, false, 1);
 
             store.pub_block(&block).unwrap();
             let h = block.get_hash();
@@ -335,8 +335,8 @@ mod tests {
         {
             let store = ConsensusStore::open(&path).unwrap();
 
-            let (_sk, pk) = gen_keypair();
-            let leader = Leader::new(pk.clone(), true, 10);
+            let (_sk, _pk) = gen_keypair();
+            let leader = Leader::new(10, true, 10);
 
             store.pub_leader(&leader).unwrap();
             let fetched = store.get_leader(10).unwrap().expect("get leader");
@@ -344,10 +344,7 @@ mod tests {
             // Compare fields; `BlsPublicKey` lacks PartialEq, compare bytes instead.
             assert_eq!(fetched.view(), 10);
             assert!(fetched.is_current());
-            assert_eq!(
-                serialize_pk(fetched.leader()),
-                serialize_pk(leader.leader())
-            );
+            assert_eq!(fetched.peer_id(), leader.peer_id());
         }
         std::fs::remove_file(&path).ok();
     }
@@ -409,7 +406,7 @@ mod tests {
             let tx_hash0: [u8; blake3::OUT_LEN] = blake3::hash(b"mbody").into();
             let sig0 = sk0.sign(&tx_hash0);
             let tx0 = Transaction::new(pk0.clone(), [1u8; 32], 1, 0, 1, 0, tx_hash0, sig0);
-            let block = Block::new(6, parent, vec![tx0], 999, false, 1);
+            let block = Block::new(6, 0, parent, vec![tx0], 999, false, 1);
 
             // 3 signers aggregate over block hash
             let (sk1, pk1) = gen_keypair();
@@ -427,6 +424,7 @@ mod tests {
 
             let agg = AggregatedSignature::<M_SIZE>::new(pks.clone(), &msg, &sigs).expect("agg");
             let m = MNotarization::<N, F, M_SIZE>::new(
+                6,
                 block.get_hash(),
                 agg.aggregated_signature,
                 pks.iter()
@@ -488,20 +486,31 @@ mod tests {
 
             // Aggregate signature over view bytes
             let view: u64 = 77;
-            let msg = view.to_le_bytes();
+            let leader_id: PeerId = 1;
+            let msg = blake3::hash(&[view.to_le_bytes(), leader_id.to_le_bytes()].concat());
 
             // Sign with the corresponding secret keys
-            let s1 = sk1.sign(&msg);
-            let s2 = sk2.sign(&msg);
-            let s3 = sk3.sign(&msg);
+            let s1 = sk1.sign(msg.as_bytes());
+            let s2 = sk2.sign(msg.as_bytes());
+            let s3 = sk3.sign(msg.as_bytes());
 
             let pks_vec = vec![pk1.clone(), pk2.clone(), pk3.clone()];
             let pks: [BlsPublicKey; M_SIZE] = pks_vec.try_into().unwrap();
 
-            let agg = AggregatedSignature::<M_SIZE>::new(pks, &msg, &[s1, s2, s3])
-                .expect("Failed to create aggregated signature");
+            let agg =
+                AggregatedSignature::<M_SIZE>::new(pks.clone(), msg.as_bytes(), &[s1, s2, s3])
+                    .expect("Failed to create aggregated signature");
 
-            let nullif = Nullification::<N, F, M_SIZE>::new(view, agg);
+            let nullif = Nullification::<N, F, M_SIZE>::new(
+                view,
+                1,
+                agg.aggregated_signature,
+                pks.iter()
+                    .map(|pk| pk.to_peer_id())
+                    .collect::<Vec<PeerId>>()
+                    .try_into()
+                    .unwrap(),
+            );
             store.pub_nullification(&nullif).unwrap();
 
             let fetched = store
@@ -509,7 +518,8 @@ mod tests {
                 .unwrap()
                 .expect("get nullification");
             assert_eq!(fetched.view, view);
-            assert!(fetched.verify());
+            assert_eq!(fetched.leader_id, 1);
+            assert!(fetched.verify(&PeerSet::new(pks.to_vec())));
         }
         std::fs::remove_file(&path).ok();
     }

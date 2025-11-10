@@ -201,6 +201,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         &mut self,
         view_number: u64,
         block: Block,
+        peers: &PeerSet,
     ) -> Result<LeaderProposalResult> {
         // Check if view exists in non-finalized views
         let ctx = self
@@ -293,7 +294,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         }
 
         // Add block to the view context
-        ctx.add_new_view_block(block)
+        ctx.add_new_view_block(block, peers)
     }
 
     /// Routes a vote to the appropriate non-finalized view context.
@@ -946,6 +947,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
     pub fn process_pending_child_proposals(
         &mut self,
         notarized_view: u64,
+        peers: &PeerSet,
     ) -> Result<Vec<LeaderProposalResult>> {
         let mut results = vec![];
         let mut pending: Vec<(u64, Block)> = vec![];
@@ -961,7 +963,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
 
         // Then process them (this avoids borrow checker issues)
         for (view_number, block) in pending {
-            let result = self.add_block_proposal(view_number, block)?;
+            let result = self.add_block_proposal(view_number, block, peers)?;
             results.push(result);
         }
 
@@ -995,6 +997,52 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         }
 
         Ok(())
+    }
+
+    /// Selects the parent block for a new view according to the Minimmit SelectParent function.
+    ///
+    /// This implements the SelectParent(S, v) function from the Minimmit paper (Section 4):
+    /// "If v' < v is the greatest view such that S contains an M-notarization for some b
+    /// with b.view = v', and if b is the lexicographically least such block, the function
+    /// outputs b."
+    ///
+    /// # Arguments
+    /// * `new_view` - The view number for which we're selecting a parent
+    ///
+    /// # Returns
+    /// * The block hash to use as parent for the new view
+    ///
+    /// # Logic
+    /// 1. Search all non-finalized views < new_view in descending order
+    /// 2. Find the greatest view with an M-notarization
+    /// 3. Return that M-notarization's block_hash
+    /// 4. If no M-notarization found in non-finalized views, return previously_committed_block_hash
+    pub fn select_parent(&self, new_view: u64) -> [u8; blake3::OUT_LEN] {
+        // Find the greatest view v' < new_view that has an M-notarization
+        let mut greatest_view_with_m_not: Option<(u64, [u8; blake3::OUT_LEN])> = None;
+
+        for (view_num, ctx) in &self.non_finalized_views {
+            if *view_num < new_view
+                && let Some(ref m_not) = ctx.m_notarization
+            {
+                // Update if this is a greater view number than we've seen
+                match greatest_view_with_m_not {
+                    None => {
+                        greatest_view_with_m_not = Some((*view_num, m_not.block_hash));
+                    }
+                    Some((prev_view, _)) if *view_num > prev_view => {
+                        greatest_view_with_m_not = Some((*view_num, m_not.block_hash));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Return the block hash from the greatest view with M-notarization,
+        // or the previously committed (finalized) block hash if none found
+        greatest_view_with_m_not
+            .map(|(_, block_hash)| block_hash)
+            .unwrap_or(self.previously_committed_block_hash)
     }
 
     /// Finds the view number for a given parent block hash in the non-finalized chain.
@@ -1107,13 +1155,29 @@ mod tests {
         height: u64,
     ) -> Block {
         let transactions = vec![gen_tx()];
+
+        // First, create a temporary block to compute its hash
+        let temp_block = Block::new(
+            view,
+            leader,
+            parent_hash,
+            transactions.clone(),
+            1234567890,
+            leader_sk.sign(b"temp"), // Temporary signature
+            false,
+            height,
+        );
+
+        // Get the block hash
+        let block_hash = temp_block.get_hash();
+
         Block::new(
             view,
             leader,
             parent_hash,
             transactions,
             1234567890,
-            leader_sk.sign(b"block proposal"),
+            leader_sk.sign(&block_hash),
             false,
             height,
         )
@@ -1195,7 +1259,7 @@ mod tests {
             view_number,
         );
         let block_hash = block.get_hash();
-        ctx.add_new_view_block(block).unwrap();
+        ctx.add_new_view_block(block, &setup.peer_set).unwrap();
 
         // Add votes
         for i in 1..num_votes {
@@ -1252,7 +1316,7 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash = block.get_hash();
-        ctx.add_new_view_block(block).unwrap();
+        ctx.add_new_view_block(block, &setup.peer_set).unwrap();
 
         let mut view_chain =
             ViewChain::<N, F, M_SIZE>::new(ctx, setup.storage.clone(), Duration::from_secs(10));
@@ -2053,7 +2117,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         // Add 1 vote (not enough for M-notarization which needs 3)
         for i in 1..2 {
@@ -2090,7 +2156,7 @@ mod tests {
         // This should FAIL because view 1 was nullified
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v2 = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result = view_chain.add_block_proposal(2, block_v2);
+        let result = view_chain.add_block_proposal(2, block_v2, &setup.peer_set);
 
         // Should fail - cannot build on nullified parent
         assert!(result.is_err());
@@ -2112,7 +2178,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         // Add 1 vote (not enough for M-notarization)
         for i in 1..2 {
@@ -2161,7 +2229,7 @@ mod tests {
         // - Intermediate view (view 2) is nullified
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v3 = create_test_block(3, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result = view_chain.add_block_proposal(3, block_v3);
+        let result = view_chain.add_block_proposal(3, block_v3, &setup.peer_set);
 
         assert!(result.is_ok());
         let proposal_result = result.unwrap();
@@ -2220,7 +2288,7 @@ mod tests {
         // Propose block for view 3 building on view 1 (skipping nullified view 2)
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v3 = create_test_block(3, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result = view_chain.add_block_proposal(3, block_v3.clone());
+        let result = view_chain.add_block_proposal(3, block_v3.clone(), &setup.peer_set);
 
         // Should succeed since parent (view 1) has M-notarization and view 2 is nullified
         assert!(result.is_ok());
@@ -2242,7 +2310,7 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash = block.get_hash();
-        ctx.add_new_view_block(block).unwrap();
+        ctx.add_new_view_block(block, &setup.peer_set).unwrap();
 
         let mut view_chain =
             ViewChain::<N, F, M_SIZE>::new(ctx, setup.storage.clone(), Duration::from_secs(10));
@@ -2380,7 +2448,7 @@ mod tests {
         // Should FAIL because view 2 (intermediate) is not nullified
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v3 = create_test_block(3, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result = view_chain.add_block_proposal(3, block_v3);
+        let result = view_chain.add_block_proposal(3, block_v3, &setup.peer_set);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not nullified"));
@@ -2401,7 +2469,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         let nullifies: HashSet<Nullify> = (0..M_SIZE)
             .map(|i| create_nullify(i, 1, leader_id, &setup))
@@ -2426,7 +2496,7 @@ mod tests {
         // Try to propose block for view 2 building on nullified view 1
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v2 = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result = view_chain.add_block_proposal(2, block_v2);
+        let result = view_chain.add_block_proposal(2, block_v2, &setup.peer_set);
 
         // Should FAIL - cannot build on nullified parent
         assert!(result.is_err());
@@ -2448,7 +2518,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
         // Only 1 vote - not enough for M-notarization
         for i in 1..2 {
             let vote = create_vote(i, 1, block_hash_v1, leader_id, &setup);
@@ -2477,7 +2549,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v2 = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
         let block_hash_v2 = block_v2.get_hash();
-        ctx_v2.add_new_view_block(block_v2).unwrap();
+        ctx_v2
+            .add_new_view_block(block_v2, &setup.peer_set)
+            .unwrap();
 
         // Add L-notarization to view 2
         for i in 1..(N - F) {
@@ -2533,7 +2607,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v3 = create_test_block(3, leader_id, block_hash_v1, leader_sk.clone(), 2);
         let block_hash_v3 = block_v3.get_hash();
-        ctx_v3.add_new_view_block(block_v3).unwrap();
+        ctx_v3
+            .add_new_view_block(block_v3, &setup.peer_set)
+            .unwrap();
         for i in 1..(N - F) {
             let vote = create_vote(i, 3, block_hash_v3, leader_id, &setup);
             ctx_v3.add_vote(vote, &setup.peer_set).unwrap();
@@ -2744,7 +2820,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         let mut view_chain =
             ViewChain::<N, F, M_SIZE>::new(ctx_v1, setup.storage.clone(), Duration::from_secs(10));
@@ -2773,7 +2851,7 @@ mod tests {
         // Propose blocks for view 2 and 3 - they should be pending
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v2 = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result_v2 = view_chain.add_block_proposal(2, block_v2);
+        let result_v2 = view_chain.add_block_proposal(2, block_v2, &setup.peer_set);
         // This will fail because current_view is 3, not 2
         assert!(result_v2.is_err());
 
@@ -2794,7 +2872,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         for i in 1..2 {
             let vote = create_vote(i, 1, block_hash_v1, leader_id, &setup);
@@ -2825,7 +2905,7 @@ mod tests {
         // This should fail because parent is nullified
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v2 = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result = view_chain.add_block_proposal(2, block_v2);
+        let result = view_chain.add_block_proposal(2, block_v2, &setup.peer_set);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("nullified"));
@@ -2848,13 +2928,13 @@ mod tests {
         // Add first block proposal
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
-        let result_1 = view_chain.add_block_proposal(1, block_1);
+        let result_1 = view_chain.add_block_proposal(1, block_1, &setup.peer_set);
         assert!(result_1.is_ok());
 
         // Attempt to add second block proposal to the same view
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_2 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
-        let result_2 = view_chain.add_block_proposal(1, block_2);
+        let result_2 = view_chain.add_block_proposal(1, block_2, &setup.peer_set);
 
         // Should fail with error indicating block already exists
         assert!(result_2.is_err());
@@ -2885,7 +2965,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         let mut view_chain =
             ViewChain::<N, F, M_SIZE>::new(ctx_v1, setup.storage.clone(), Duration::from_secs(10));
@@ -2900,7 +2982,7 @@ mod tests {
         // This should be pending because parent lacks M-notarization
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_2a = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result_1 = view_chain.add_block_proposal(2, block_2a);
+        let result_1 = view_chain.add_block_proposal(2, block_2a, &setup.peer_set);
         assert!(result_1.is_ok());
         let result_1 = result_1.unwrap();
         assert!(result_1.should_await); // Should be pending
@@ -2910,7 +2992,7 @@ mod tests {
         // Attempt to add second block proposal to same view (should fail)
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_2b = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result_2 = view_chain.add_block_proposal(2, block_2b);
+        let result_2 = view_chain.add_block_proposal(2, block_2b, &setup.peer_set);
 
         // Should fail with error indicating pending block already exists
         assert!(result_2.is_err());
@@ -2941,7 +3023,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         for i in 1..2 {
             let vote = create_vote(i, 1, block_hash_v1, leader_id, &setup);
@@ -2971,7 +3055,7 @@ mod tests {
         // Try to propose block for view 2 building on view 1 (nullified) - should fail
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v2 = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result = view_chain.add_block_proposal(2, block_v2);
+        let result = view_chain.add_block_proposal(2, block_v2, &setup.peer_set);
 
         assert!(result.is_err());
 
@@ -2991,7 +3075,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         let nullifies: HashSet<Nullify> = (0..M_SIZE)
             .map(|i| create_nullify(i, 1, leader_id, &setup))
@@ -3063,7 +3149,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v1 = create_test_block(1, leader_id, parent_hash, leader_sk.clone(), 1);
         let block_hash_v1 = block_v1.get_hash();
-        ctx_v1.add_new_view_block(block_v1).unwrap();
+        ctx_v1
+            .add_new_view_block(block_v1, &setup.peer_set)
+            .unwrap();
 
         let mut view_chain =
             ViewChain::<N, F, M_SIZE>::new(ctx_v1, setup.storage.clone(), Duration::from_secs(10));
@@ -3088,7 +3176,7 @@ mod tests {
         // Block for view 2 building on nullified view 1 should fail
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v2 = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
-        let result = view_chain.add_block_proposal(2, block_v2);
+        let result = view_chain.add_block_proposal(2, block_v2, &setup.peer_set);
         assert!(result.is_err());
 
         std::fs::remove_dir_all(setup.temp_dir.path()).unwrap();
@@ -3370,7 +3458,7 @@ mod tests {
         // Propose block building on finalized hash
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block = create_test_block(1, leader_id, finalized_hash, leader_sk.clone(), 1);
-        let result = view_chain.add_block_proposal(1, block);
+        let result = view_chain.add_block_proposal(1, block, &setup.peer_set);
 
         assert!(result.is_ok());
         let proposal_result = result.unwrap();
@@ -3396,7 +3484,7 @@ mod tests {
         let unknown_parent = [77u8; blake3::OUT_LEN];
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block = create_test_block(1, leader_id, unknown_parent, leader_sk.clone(), 1);
-        let result = view_chain.add_block_proposal(1, block);
+        let result = view_chain.add_block_proposal(1, block, &setup.peer_set);
 
         assert!(result.is_err());
         assert!(
@@ -3580,7 +3668,9 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block_v2 = create_test_block(2, leader_id, block_hash_v1, leader_sk.clone(), 2);
         let block_hash_v2 = block_v2.get_hash();
-        ctx_v2.add_new_view_block(block_v2.clone()).unwrap();
+        ctx_v2
+            .add_new_view_block(block_v2.clone(), &setup.peer_set)
+            .unwrap();
 
         let nullifies_v2: HashSet<Nullify> = (0..M_SIZE)
             .map(|i| create_nullify(i, 2, leader_id, &setup))

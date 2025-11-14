@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// This is crucial for the safety of the consensus protocol, and to make sure
 /// that replicas are always able to agree on the leader for a view, given its past
 /// state.
-pub trait LeaderManager {
+pub trait LeaderManager: Send {
     /// Selects the leader for a given view.
     fn leader_for_view(&self, view: u64) -> Result<Leader>;
 }
@@ -28,7 +28,46 @@ pub(crate) struct RoundRobinLeaderManager {
 }
 
 impl RoundRobinLeaderManager {
+    /// Creates a new round-robin leader manager.
+    ///
+    /// # Arguments
+    /// * `n` - The total number of replicas in the consensus protocol
+    /// * `replicas` - A **sorted** vector of replica peer IDs
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - The `replicas` vector is not sorted in ascending order
+    /// - The length of `replicas` does not match `n`
+    ///
+    /// # Safety Note
+    ///
+    /// The caller MUST ensure that all replicas in the network use the exact same
+    /// sorted ordering. Using `PeerSet::sorted_peer_ids` is the recommended way
+    /// to guarantee this invariant.
     pub fn new(n: usize, replicas: Vec<PeerId>) -> Self {
+        assert_eq!(
+            replicas.len(),
+            n,
+            "Replicas count mismatch: expected {}, got {}",
+            n,
+            replicas.len()
+        );
+
+        // Verify that the replicas are sorted (for deterministic round-robin leader selection)
+        for i in 1..replicas.len() {
+            assert!(
+                replicas[i - 1] < replicas[i],
+                "Replicas must be sorted in ascending order. \
+                Found {} >= {} at indices {} and {}. \
+                Use PeerSet::sorted_peer_ids to ensure proper ordering.",
+                replicas[i - 1],
+                replicas[i],
+                i - 1,
+                i
+            );
+        }
+
         Self { n, replicas }
     }
 }

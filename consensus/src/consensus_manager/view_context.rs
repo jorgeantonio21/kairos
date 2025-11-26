@@ -535,8 +535,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
         let peer_public_key = peers.get_public_key(&vote.peer_id)?;
         if !vote.verify(peer_public_key) {
             return Err(anyhow::anyhow!(
-                "Vote signature is not valid for peer {}",
-                vote.peer_id
+                "Vote signature is not valid for peer {}, view number {}",
+                vote.peer_id,
+                vote.view
             ));
         }
 
@@ -606,14 +607,29 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
     }
 
     /// Adds the current replica's own vote to the current view's context.
-    pub fn add_own_vote(&mut self, signature: BlsSignature) -> Result<()> {
+    pub fn add_own_vote(
+        &mut self,
+        block_hash: [u8; blake3::OUT_LEN],
+        signature: BlsSignature,
+    ) -> Result<()> {
         if self.has_voted {
             return Err(anyhow::anyhow!("Replica has already voted"));
+        }
+        if let Some(current_hash) = self.block_hash {
+            if current_hash != block_hash {
+                return Err(anyhow::anyhow!(
+                    "Replica trying to vote for block hash {:?} but context already has block hash {:?}",
+                    block_hash,
+                    current_hash
+                ));
+            }
+        } else {
+            self.block_hash = Some(block_hash);
         }
         self.has_voted = true;
         self.votes.insert(Vote::new(
             self.view_number,
-            self.block_hash.unwrap(),
+            block_hash,
             signature,
             self.replica_id,
             self.leader_id,
@@ -778,6 +794,29 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
         let should_vote = !self.has_voted && !self.has_nullified;
 
         if self.block_hash.is_none() {
+            // If we receive an M-notarization but haven't seen the block yet,
+            // we accept the block hash from the M-notarization as the valid one for this view.
+            // This ensures that future chain validation (e.g., find_parent_view) can find this
+            // view.
+            self.block_hash = Some(m_notarization.block_hash);
+
+            // Process any non-verified votes that match this hash
+            if !self.non_verified_votes.is_empty() {
+                let block_hash = m_notarization.block_hash;
+                let mut num_matching_votes = 0;
+
+                self.non_verified_votes
+                    .iter()
+                    .filter(|v| v.block_hash == block_hash)
+                    .for_each(|v| {
+                        self.votes.insert(v.clone());
+                        num_matching_votes += 1;
+                    });
+
+                self.num_invalid_votes += self.non_verified_votes.len() - num_matching_votes;
+                self.non_verified_votes.clear();
+            }
+
             let should_forward = if self.m_notarization.is_none() {
                 self.m_notarization = Some(m_notarization.clone());
                 true
@@ -2839,15 +2878,15 @@ mod tests {
         let mut context =
             create_test_view_context_with_params::<6, 1, 3>(10, leader_id, replica_id, parent_hash);
 
-        // Step 1: Receive M-notarization for WRONG block hash
-        let wrong_block_hash = [69u8; blake3::OUT_LEN];
+        // Step 1: Receive M-notarization for an initial block hash
+        let initial_block_hash = [69u8; blake3::OUT_LEN];
         let mut votes = HashSet::new();
         for i in 1..=3 {
-            let vote = create_test_vote(i, 10, wrong_block_hash, leader_id, &setup);
+            let vote = create_test_vote(i, 10, initial_block_hash, leader_id, &setup);
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, wrong_block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, initial_block_hash, leader_id);
 
         let result1 = context.add_m_notarization(m_notarization, peers);
         assert!(result1.is_ok());
@@ -2857,12 +2896,13 @@ mod tests {
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block = create_test_block(10, leader_id, parent_hash, leader_sk.clone(), 1);
         let actual_block_hash = block.get_hash();
-        assert_ne!(actual_block_hash, wrong_block_hash); // Verify they're different
+        assert_ne!(actual_block_hash, initial_block_hash); // Verify they're different
 
         let result2 = context.add_new_view_block(block, peers);
         assert!(result2.is_ok());
 
         let proposal_result = result2.unwrap();
+        assert!(proposal_result.should_nullify);
 
         // should_nullify should be true
         assert!(proposal_result.should_nullify);
@@ -2873,7 +2913,8 @@ mod tests {
 
         // Block hash should be set to the one of the M-notarization block hash
         // as at least one honest replica voted for it, and therefore the leader was Byzantine
-        assert!(context.block_hash.is_none());
+        assert!(context.block_hash.is_some());
+        assert_eq!(context.block_hash.unwrap(), initial_block_hash);
 
         // Non-verified M-notarization should NOT be DISCARDED (hash mismatch), but should be
         // nullified
@@ -4394,7 +4435,7 @@ mod tests {
         // Replica votes for the block
         let replica_sk = setup.peer_id_to_secret_key.get(&replica_id).unwrap();
         let vote_sig = replica_sk.sign(&block_hash);
-        context.add_own_vote(vote_sig).unwrap();
+        context.add_own_vote(block_hash, vote_sig).unwrap();
         assert!(context.has_voted);
 
         // Then receive 3 votes for a DIFFERENT block (Byzantine behavior)
@@ -4435,5 +4476,80 @@ mod tests {
         let result = context.create_nullify_for_timeout(secret_key);
         assert!(result.is_ok());
         assert!(context.has_nullified);
+    }
+
+    #[test]
+    fn test_add_m_notarization_sets_block_hash_if_missing() {
+        let setup = create_test_peer_setup(4);
+        // N=4, F=1, M=3
+        let mut ctx = create_test_view_context(
+            1,
+            setup.peer_set.sorted_peer_ids[0],
+            setup.peer_set.sorted_peer_ids[1],
+            [0u8; 32],
+        );
+
+        // Simulate receiving 3 votes (M-notarization threshold) for a block hash
+        let block_hash = [0xaa; 32];
+        let mut votes = HashSet::new();
+        for i in 0..3 {
+            let vote =
+                create_test_vote(i, 1, block_hash, setup.peer_set.sorted_peer_ids[0], &setup);
+            votes.insert(vote);
+        }
+
+        let m_notarization =
+            create_test_m_notarization(&votes, 1, block_hash, setup.peer_set.sorted_peer_ids[0]);
+
+        // Pre-condition: Block hash is unknown
+        assert!(ctx.block_hash.is_none());
+
+        // Action: Add M-notarization
+        let result = ctx.add_m_notarization(m_notarization, &setup.peer_set);
+
+        // Assertion: Result is Ok and block_hash is now set
+        assert!(result.is_ok());
+        assert_eq!(ctx.block_hash, Some(block_hash));
+        assert!(ctx.m_notarization.is_some());
+    }
+
+    #[test]
+    fn test_add_m_notarization_processes_non_verified_votes() {
+        let setup = create_test_peer_setup(4);
+        let mut ctx = create_test_view_context(
+            1,
+            setup.peer_set.sorted_peer_ids[0],
+            setup.peer_set.sorted_peer_ids[1],
+            [0u8; 32],
+        );
+        let block_hash = [0xaa; 32];
+
+        // Add a vote to non-verified (because block hash is unknown)
+        let vote = create_test_vote(2, 1, block_hash, setup.peer_set.sorted_peer_ids[0], &setup);
+        ctx.add_vote(vote.clone(), &setup.peer_set).unwrap();
+        assert!(ctx.non_verified_votes.contains(&vote));
+        assert!(ctx.votes.is_empty());
+
+        // Create M-notarization
+        let mut votes = HashSet::new();
+        for i in 0..3 {
+            votes.insert(create_test_vote(
+                i,
+                1,
+                block_hash,
+                setup.peer_set.sorted_peer_ids[0],
+                &setup,
+            ));
+        }
+        let m_notarization =
+            create_test_m_notarization(&votes, 1, block_hash, setup.peer_set.sorted_peer_ids[0]);
+
+        // Add M-notarization
+        ctx.add_m_notarization(m_notarization, &setup.peer_set)
+            .unwrap();
+
+        // Assertion: The vote should move from non-verified to valid votes
+        assert!(ctx.non_verified_votes.is_empty());
+        assert!(ctx.votes.contains(&vote));
     }
 }

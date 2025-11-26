@@ -160,7 +160,7 @@
 //! The state machine is typically created by [`ConsensusEngine`] and should not be
 //! instantiated directly in production code. For testing, use [`ConsensusStateMachineBuilder`]:
 //!
-//!rust,ignore
+//! ```rust,ignore
 //! use consensus::consensus_manager::state_machine::ConsensusStateMachineBuilder;
 //! use std::{sync::{Arc, atomic::AtomicBool}, time::Duration};
 //!
@@ -180,7 +180,7 @@
 //!     state_machine.run()?;
 //!     Ok(())
 //! # }
-//! //!
+//! ```
 //! ## Thread Safety
 //!
 //! The state machine is **not** thread-safe and should only be accessed from the thread
@@ -205,6 +205,7 @@
 //!   first created, as per Algorithm 1 lines 2-3
 
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -229,6 +230,9 @@ const MAX_BROADCAST_ATTEMPTS: usize = 10;
 pub struct ConsensusStateMachine<const N: usize, const F: usize, const M_SIZE: usize> {
     /// The view progress manager that drives consensus logic
     view_manager: ViewProgressManager<N, F, M_SIZE>,
+
+    /// Buffer for messages received for future views
+    pending_messages: BTreeMap<u64, Vec<ConsensusMessage<N, F, M_SIZE>>>,
 
     /// Secret key for signing messages
     secret_key: BlsSecretKey,
@@ -267,6 +271,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
     ) -> Result<Self> {
         Ok(Self {
             view_manager,
+            pending_messages: BTreeMap::new(),
             secret_key,
             message_consumer,
             broadcast_producer,
@@ -307,8 +312,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             // Periodic tick
             if last_tick.elapsed() >= self.tick_interval {
                 did_work = true;
-                if let Err(e) = self.view_manager.tick() {
-                    slog::error!(self.logger, "Error ticking view manager: {}", e);
+                match self.handle_tick() {
+                    Ok(_) => {}
+                    Err(e) => {
+                        slog::error!(self.logger, "Error handling tick: {}", e);
+                    }
                 }
                 last_tick = Instant::now();
             }
@@ -342,7 +350,21 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
 
     /// Handles any incoming consensus messages
     fn handle_consensus_message(&mut self, message: ConsensusMessage<N, F, M_SIZE>) -> Result<()> {
-        let event = self.view_manager.process_consensus_msg(message)?;
+        let event = self.view_manager.process_consensus_msg(message.clone())?;
+
+        if let ViewProgressEvent::ShouldUpdateView { new_view, .. } = event {
+            slog::info!(
+                self.logger,
+                "Buffering message for future view {}",
+                new_view
+            );
+            self.pending_messages
+                .entry(new_view)
+                .or_default()
+                .push(message);
+            return Ok(());
+        }
+
         self.handle_event(event)
     }
 
@@ -483,30 +505,92 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let block_hash = compute_block_hash(parent_block_hash, &transactions, timestamp, view);
-        let leader_signature = self.secret_key.sign(&block_hash);
 
-        // Create a new block
-        let block = Block::new(
+        // Create a dummy signature to construct the block structure.
+        // The signature is NOT part of the block hash, so this doesn't affect the hash.
+        // We sign a zero-byte array just to get a valid BlsSignature type.
+        let dummy_signature = self.secret_key.sign(&[0u8; 32]);
+
+        // Create the block. This internally calls compute_hash() on the contents.
+        let mut block = Block::new(
             view,
-            self.view_manager.replica_id(), /* It is the current leader replica that is
-                                             * proposing the block */
+            self.view_manager.replica_id(),
             parent_block_hash,
             transactions,
             timestamp,
-            leader_signature,
+            dummy_signature,
             false,
             view,
         );
 
+        // Get the canonical hash from the block itself.
+        // This is the exact hash that validators will re-compute.
+        let block_hash = block.get_hash();
+
+        // Sign the canonical hash with the leader's key.
+        let leader_signature = self.secret_key.sign(&block_hash);
+
+        // Update the block with the true leader signature.
+        block.leader_signature = leader_signature.clone();
+
         // Broadcast the block proposal to the network layer (to be received by other replicas)
-        self.broadcast_consensus_message(ConsensusMessage::BlockProposal(block))?;
+        self.broadcast_consensus_message(ConsensusMessage::BlockProposal(block.clone()))?;
+
+        // Manually process the block proposal locally to avoid redundant vote broadcasting.
+        // The leader's block proposal implicitly counts as a vote.
+        let event = self
+            .view_manager
+            .process_consensus_msg(ConsensusMessage::BlockProposal(block))?;
+
+        match event {
+            ViewProgressEvent::ShouldVote { view, block_hash } => {
+                // Leader implicitly votes via block proposal.
+                // Update local state but DO NOT broadcast explicit Vote message.
+                slog::debug!(
+                    self.logger,
+                    "Adding own vote for view {view} with block hash {block_hash:?}",
+                );
+                self.view_manager
+                    .add_own_vote(view, block_hash, leader_signature)?;
+            }
+            ViewProgressEvent::ShouldVoteAndMNotarize {
+                view,
+                block_hash,
+                should_forward_m_notarization,
+            } => {
+                slog::debug!(
+                    self.logger,
+                    "Adding own vote and creating M-notarization for view {view} with block hash {block_hash:?}",
+                );
+                self.view_manager
+                    .add_own_vote(view, block_hash, leader_signature)?;
+                self.create_and_broadcast_m_notarization(
+                    view,
+                    block_hash,
+                    should_forward_m_notarization,
+                )?;
+            }
+            ViewProgressEvent::ShouldVoteAndFinalize { view, block_hash } => {
+                slog::debug!(
+                    self.logger,
+                    "Adding own vote and finalizing view {view} with block hash {block_hash:?}",
+                );
+                self.view_manager
+                    .add_own_vote(view, block_hash, leader_signature)?;
+                self.finalize_view(view, block_hash)?;
+            }
+            // Fallback for other events
+            _ => {
+                slog::warn!(
+                    self.logger,
+                    "Unexpected event after block proposal: {event:?}. Handling it anyway.",
+                );
+                self.handle_event(event)?;
+            }
+        }
 
         // Mark the block as proposed
         self.view_manager.mark_proposed(view)?;
-
-        // Mark the block as voted
-        self.view_manager.mark_voted(view)?;
 
         Ok(())
     }
@@ -533,14 +617,23 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             leader_id,
         );
 
+        let my_pk = self.secret_key.public_key();
+        if !my_pk.verify(&block_hash, &vote_signature) {
+            slog::error!(
+                self.logger,
+                "[DEBUG] CRITICAL: Local vote signing failed verification with own PK!"
+            );
+        }
+
         // Broadcast the vote to the network layer (to be received by other replicas)
         self.broadcast_consensus_message(ConsensusMessage::Vote(vote))?;
 
         // Mark the vote as cast
-        self.view_manager.mark_voted(view)?;
+        // self.view_manager.mark_voted(view)?;
 
         // Add the vote to the view context
-        self.view_manager.add_own_vote(view, vote_signature)?;
+        self.view_manager
+            .add_own_vote(view, block_hash, vote_signature)?;
 
         Ok(())
     }
@@ -636,6 +729,30 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             self.logger,
             "Progressing to next view {view} with leader {leader} and notarized block hash {notarized_block_hash:?}"
         );
+
+        // Replay any buffered messages for this view (or previous ones)
+        let pending_views: Vec<u64> = self
+            .pending_messages
+            .keys()
+            .cloned()
+            .filter(|&v| v <= view)
+            .collect();
+
+        for pending_view in pending_views {
+            if let Some(messages) = self.pending_messages.remove(&pending_view) {
+                slog::debug!(
+                    self.logger,
+                    "Replaying {} buffered messages for view {}",
+                    messages.len(),
+                    pending_view
+                );
+                for msg in messages {
+                    if let Err(e) = self.handle_consensus_message(msg) {
+                        slog::error!(self.logger, "Failed to process buffered message: {}", e);
+                    }
+                }
+            }
+        }
 
         // Check if the current replica is the leader for the next view
         let replica_id = self.view_manager.replica_id();
@@ -795,31 +912,6 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
     }
 }
 
-fn compute_block_hash(
-    parent_block_hash: [u8; blake3::OUT_LEN],
-    txs: &[Transaction],
-    timestamp: u64,
-    view: u64,
-) -> [u8; blake3::OUT_LEN] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&parent_block_hash);
-    hasher.update(
-        &txs.iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let mut hasher = blake3::Hasher::new();
-                hasher.update(&i.to_le_bytes());
-                hasher.update(&t.tx_hash);
-                hasher.finalize().into()
-            })
-            .collect::<Vec<[u8; blake3::OUT_LEN]>>()
-            .concat(),
-    );
-    hasher.update(&timestamp.to_le_bytes());
-    hasher.update(&view.to_le_bytes());
-    hasher.finalize().into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,6 +1039,9 @@ mod tests {
             }
             let config = create_test_config(N, F, peer_strs);
 
+            // Create logger
+            let logger = slog::Logger::root(slog::Discard, slog::o!());
+
             // Create leader manager
             let leader_manager = Box::new(RoundRobinLeaderManager::new(
                 N,
@@ -961,7 +1056,8 @@ mod tests {
 
             // Create view manager
             let view_manager =
-                ViewProgressManager::new(config, replica_id, storage, leader_manager).unwrap();
+                ViewProgressManager::new(config, replica_id, storage, leader_manager, logger)
+                    .unwrap();
 
             // Create logger
             let logger = slog::Logger::root(slog::Discard, slog::o!());
@@ -998,28 +1094,6 @@ mod tests {
         // 3. Nullification requires 2f+1 = 3 nullify messages
         assert_eq!(2 * F + 1, M_SIZE);
         assert_eq!(N - F, 5);
-    }
-
-    #[test]
-    fn test_block_hash_computation_is_consistent() {
-        let parent_hash = [0u8; blake3::OUT_LEN];
-        let txs = vec![create_test_transaction(1), create_test_transaction(2)];
-        let timestamp = 1234567890;
-        let view = 1;
-
-        let hash1 = compute_block_hash(parent_hash, &txs, timestamp, view);
-        let hash2 = compute_block_hash(parent_hash, &txs, timestamp, view);
-
-        // Same inputs should produce same hash
-        assert_eq!(hash1, hash2);
-
-        // Different timestamp should produce different hash
-        let hash3 = compute_block_hash(parent_hash, &txs, timestamp + 1, view);
-        assert_ne!(hash1, hash3);
-
-        // Different view should produce different hash
-        let hash4 = compute_block_hash(parent_hash, &txs, timestamp, view + 1);
-        assert_ne!(hash1, hash4);
     }
 
     #[test]

@@ -99,11 +99,15 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         persistence_storage: ConsensusStore,
         view_timeout: Duration,
     ) -> Self {
+        let current_view = initial_view.view_number;
+        let mut non_finalized_views = HashMap::new();
+        non_finalized_views.insert(current_view, initial_view);
+
         Self {
-            current_view: initial_view.view_number,
-            non_finalized_views: HashMap::from([(initial_view.view_number, initial_view)]),
+            current_view,
+            non_finalized_views,
             persistence_storage,
-            previously_committed_block_hash: Default::default(),
+            previously_committed_block_hash: Block::genesis_hash(),
             _view_timeout: view_timeout,
         }
     }
@@ -326,6 +330,26 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
             return ctx.add_vote(vote, peers);
         }
 
+        // Check if this view is older than our oldest active view.
+        // If so, it has already been finalized and garbage collected, so we can safely ignore this
+        // message.
+        let oldest_active_view = self
+            .non_finalized_views
+            .keys()
+            .min()
+            .copied()
+            .unwrap_or(self.current_view);
+
+        if vote.view < oldest_active_view {
+            return Ok(CollectedVotesResult {
+                should_await: false,
+                is_enough_to_m_notarize: false,
+                is_enough_to_finalize: false,
+                should_nullify: false,
+                should_vote: false,
+            });
+        }
+
         Err(anyhow::anyhow!(
             "Vote for view {} is not the current view {} or an unfinalized view",
             vote.view,
@@ -365,6 +389,20 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
             return Ok(false);
         }
 
+        // Check if this view is older than our oldest active view.
+        // If so, it has already been finalized and garbage collected, so we can safely ignore this
+        // message.
+        let oldest_active_view = self
+            .non_finalized_views
+            .keys()
+            .min()
+            .cloned()
+            .unwrap_or(self.current_view);
+
+        if nullify.view < oldest_active_view {
+            return Ok(false);
+        }
+
         Err(anyhow::anyhow!(
             "Nullify for view {} is not the current view {} or an unfinalized view",
             nullify.view,
@@ -398,6 +436,26 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
                 ctx.has_view_progressed_without_m_notarization()?;
             }
             return ctx.add_m_notarization(m_notarization, peers);
+        }
+
+        // Check if this view is older than our oldest active view.
+        // If so, it has already been finalized and garbage collected, so we can safely ignore this
+        // message.
+        let oldest_active_view = self
+            .non_finalized_views
+            .keys()
+            .min()
+            .cloned()
+            .unwrap_or(self.current_view);
+
+        if m_notarization.view < oldest_active_view {
+            return Ok(ShouldMNotarize {
+                should_notarize: false,
+                should_await: false,
+                should_vote: false,
+                should_nullify: false,
+                should_forward: false,
+            });
         }
 
         Err(anyhow::anyhow!(
@@ -604,13 +662,17 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
             ));
         }
 
-        // 4. Find the parent view (the view the finalized block builds on)
-        let parent_hash = finalized_ctx
-            .block
-            .as_ref()
-            .ok_or(anyhow::anyhow!("Finalized view has no block"))?
-            .parent_block_hash();
+        // 4. Check if we have the block. If not, we defer finalization.
+        // We cannot finalize without the block because we need the parent_block_hash for GC
+        // and the transactions for persistence.
+        if finalized_ctx.block.is_none() {
+            return Ok(());
+        }
 
+        let finalized_block = finalized_ctx.block.as_ref().unwrap_or_else(|| {
+            panic!("Block for finalized view {} is not None", finalized_view);
+        });
+        let parent_hash = finalized_block.parent_block_hash();
         let parent_view = self.find_parent_view(&parent_hash);
 
         // 5. Validate the chain structure
@@ -657,6 +719,18 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
                     "View number {} is not a non-finalized view",
                     finalized_view
                 ))?;
+
+        // Pre-check: Ensure all non-nullified views in the range have blocks.
+        // If any ancestor is missing its block, we must defer the entire finalization
+        // to avoid partial persistence errors.
+        for view_num in to_persist_range.clone() {
+            if let Some(ctx) = self.non_finalized_views.get(&view_num) {
+                // Nullified views don't need blocks, but M/L-notarized views do.
+                if ctx.nullification.is_none() && ctx.block.is_none() {
+                    return Ok(());
+                }
+            }
+        }
 
         for view_number in to_persist_range {
             let ctx = self.non_finalized_views.remove(&view_number).unwrap();
@@ -2917,9 +2991,9 @@ mod tests {
     fn test_duplicate_block_proposal_to_same_view_fails() {
         // Test that attempting to add a second block to a view that already has one fails
         let setup = TestSetup::new(N);
-        let leader_id = setup.leader_id(0);
-        let replica_id = setup.replica_id(1);
-        let parent_hash = [0u8; blake3::OUT_LEN];
+        let leader_id = setup.leader_id(1);
+        let replica_id = setup.replica_id(0);
+        let parent_hash = Block::genesis_hash();
 
         let ctx = ViewContext::new(1, leader_id, replica_id, parent_hash);
         let mut view_chain =
@@ -3550,8 +3624,8 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_fails_if_no_block_in_view() {
-        // View has votes but no block (corrupted state)
+    fn test_finalize_defers_if_no_block_in_view() {
+        // View has votes but no block - finalization should be deferred
         let setup = TestSetup::new(N);
         let leader_id = setup.leader_id(0);
         let replica_id = setup.replica_id(1);
@@ -3559,9 +3633,7 @@ mod tests {
 
         // Create view without block but with votes (manually)
         let mut ctx = ViewContext::new(1, leader_id, replica_id, parent_hash);
-        // Don't add block, just add votes manually
         ctx.block_hash = Some([66u8; 32]);
-        // Manually add votes to bypass normal validation
         for i in 0..(N - F) {
             let vote = create_vote(i, 1, [66u8; 32], leader_id, &setup);
             ctx.votes.insert(vote);
@@ -3585,11 +3657,11 @@ mod tests {
         let ctx_v2 = ViewContext::new(2, leader_id, replica_id, [66u8; 32]);
         view_chain.progress_with_m_notarization(ctx_v2).unwrap();
 
-        // Try to finalize view 1 - should fail because no block
+        // Try to finalize view 1 - should defer (return Ok) because no block
         let result = view_chain.finalize_with_l_notarization(1, &setup.peer_set);
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("has no block"));
+        assert!(result.is_ok()); // Deferral, not failure
+        assert!(view_chain.non_finalized_views.contains_key(&1)); // View still present
 
         std::fs::remove_dir_all(setup.temp_dir.path()).unwrap();
     }
@@ -3818,5 +3890,39 @@ mod tests {
         assert_eq!(view_chain.previously_committed_block_hash, block_hash_v3);
 
         std::fs::remove_dir_all(setup.temp_dir.path()).unwrap();
+    }
+
+    #[test]
+    fn test_route_messages_ignores_old_views() {
+        let setup = TestSetup::new(4);
+        let initial_view = create_view_context_with_votes(
+            10,
+            setup.leader_id(0),
+            setup.replica_id(1),
+            [0u8; 32],
+            0,
+            &setup,
+        );
+        let mut chain =
+            ViewChain::new(initial_view, setup.storage.clone(), Duration::from_secs(10));
+
+        // Test Vote for old view
+        let old_vote = create_vote(2, 5, [0u8; 32], setup.leader_id(0), &setup);
+        let vote_result = chain.route_vote(old_vote, &setup.peer_set);
+        assert!(vote_result.is_ok());
+        let res = vote_result.unwrap();
+        assert!(!res.should_vote);
+
+        // Test M-notarization for old view
+        let mut votes = HashSet::new();
+        // Fix: create enough votes to satisfy the threshold (3 for N=4, F=1)
+        for i in 0..3 {
+            votes.insert(create_vote(i, 5, [0u8; 32], setup.leader_id(0), &setup));
+        }
+        let old_m_not = create_m_notarization(&votes, 5, [0u8; 32], setup.leader_id(0));
+        let m_res = chain.route_m_notarization(old_m_not, &setup.peer_set);
+        assert!(m_res.is_ok());
+        let res = m_res.unwrap();
+        assert!(!res.should_notarize);
     }
 }

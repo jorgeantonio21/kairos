@@ -55,7 +55,7 @@
 //!
 //! ## Usage Example
 //!
-//!rust,ignore
+//! ```rust,ignore
 //! use consensus::{
 //!     consensus_manager::{
 //!         consensus_engine::ConsensusEngine,
@@ -88,7 +88,7 @@
 //!     engine.shutdown_and_wait(Duration::from_secs(10))?;
 //!     Ok(())
 //! # }
-//! //!
+//! ```
 //! ## Thread Safety
 //!
 //! The `ConsensusEngine` is designed for single-threaded ownership in the main application
@@ -210,8 +210,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
         };
 
         // Create view progress manager
-        let view_manager = ViewProgressManager::new(config, replica_id, storage, leader_manager)
-            .context("Failed to create ViewProgressManager")?;
+        let view_manager =
+            ViewProgressManager::new(config, replica_id, storage, leader_manager, logger.clone())
+                .context("Failed to create ViewProgressManager")?;
 
         // Build consensus state machine
         let mut state_machine = ConsensusStateMachineBuilder::new()

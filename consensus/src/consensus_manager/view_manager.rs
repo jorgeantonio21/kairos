@@ -565,6 +565,28 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         Ok(vote)
     }
 
+    /// Selects the parent block for a new view according to the Minimmit SelectParent function.
+    ///
+    /// This implements the SelectParent(S, v) function from the Minimmit paper (Section 4):
+    /// "If v' < v is the greatest view such that S contains an M-notarization for some b
+    /// with b.view = v', and if b is the lexicographically least such block, the function
+    /// outputs b."
+    ///
+    /// # Arguments
+    /// * `view` - The view number for which we're selecting a parent
+    ///
+    /// # Returns
+    /// * The block hash to use as parent for the new view
+    ///
+    /// # Logic
+    /// 1. Search all non-finalized views < new_view in descending order
+    /// 2. Find the greatest view with an M-notarization that is not nullified
+    /// 3. Return that M-notarization's block_hash
+    /// 4. If no M-notarization found in non-finalized views, return previously_committed_block_hash
+    pub fn select_parent(&self, new_view: u64) -> [u8; blake3::OUT_LEN] {
+        self.view_chain.select_parent(new_view)
+    }
+
     /// Main driver of the state machine replication algorithm.
     ///
     /// Processes received `ConsensusMessage` and emits appropriate `ViewProgressEvent`s
@@ -980,6 +1002,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         }
 
         if should_nullify {
+            // Check if this is a past view and if so, trigger should nullify range
+            if vote_view_number < current_view_number {
+                return Ok(ViewProgressEvent::ShouldNullifyRange {
+                    start_view: vote_view_number,
+                });
+            }
+
             return Ok(ViewProgressEvent::ShouldNullify {
                 view: vote_view_number,
             });
@@ -1069,6 +1098,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         let has_nullification = self.view_chain.route_nullify(nullify, &self.peers)?;
 
         if has_nullification {
+            // Check if this is a past view - if so, trigger should cascade nullification
+            if nullify_view_number < current_view_number {
+                return Ok(ViewProgressEvent::ShouldCascadeNullification {
+                    start_view: nullify_view_number,
+                    should_broadcast_nullification: true, // We just created the nullification
+                });
+            }
             return Ok(ViewProgressEvent::ShouldBroadcastNullification {
                 view: nullify_view_number,
             });
@@ -1237,6 +1273,20 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         } = self
             .view_chain
             .route_nullification(nullification, &self.peers)?;
+
+        // Cascade if this is a past view AND (new evidence OR had M-notarization)
+        if nullification_view_number < current_view_number && should_broadcast_nullification {
+            slog::warn!(
+                self.logger,
+                "Received nullification for past view {} while in view {}. Triggering cascade.",
+                nullification_view_number,
+                current_view_number
+            );
+            return Ok(ViewProgressEvent::ShouldCascadeNullification {
+                start_view: nullification_view_number,
+                should_broadcast_nullification,
+            });
+        }
 
         // Progress to next view with nullification
         if nullification_view_number == current_view_number {
@@ -1484,6 +1534,42 @@ mod tests {
             rand::random::<u64>()
         ));
         p.to_string_lossy().to_string()
+    }
+
+    /// Creates a test block with a given leader secret key
+    fn create_test_block_with_sk(
+        view: u64,
+        leader: PeerId,
+        parent_hash: [u8; blake3::OUT_LEN],
+        leader_sk: BlsSecretKey,
+        height: u64,
+    ) -> Block {
+        let transactions = vec![];
+
+        // Create temp block to get hash
+        let temp_block = Block::new(
+            view,
+            leader,
+            parent_hash,
+            transactions.clone(),
+            1234567890,
+            leader_sk.sign(b"temp"),
+            false,
+            height,
+        );
+
+        let block_hash = temp_block.get_hash();
+
+        Block::new(
+            view,
+            leader,
+            parent_hash,
+            transactions,
+            1234567890,
+            leader_sk.sign(&block_hash),
+            false,
+            height,
+        )
     }
 
     /// Creates a test view progress manager
@@ -6223,5 +6309,283 @@ mod tests {
                 other
             ),
         }
+    }
+
+    #[test]
+    fn test_handle_vote_triggers_nullify_range_for_past_view_conflict() {
+        let setup = create_test_peer_setup(6);
+        let (mut manager, path): (ViewProgressManager<6, 1, 3>, String) =
+            create_test_manager(&setup, 2); // Replica 2 (not leader)
+
+        // Setup: Progress to view 2 so we have a "past view" (view 1)
+        let leader_v1 = setup.peer_set.sorted_peer_ids[1]; // Leader for view 1
+
+        // Create and add block for view 1
+        let leader_sk = setup.peer_id_to_secret_key.get(&leader_v1).unwrap().clone();
+        let block_v1 =
+            create_test_block_with_sk(1, leader_v1, Block::genesis_hash(), leader_sk.clone(), 1);
+        let block_hash_v1 = block_v1.get_hash();
+
+        // Process block for view 1
+        manager.handle_block_proposal(block_v1).unwrap();
+
+        // Add votes for M-notarization on view 1
+        // Leader is at index 1, so use indices 0, 2, 3 to avoid conflict
+        let voter_indices = [0, 2, 3];
+        let mut votes = HashSet::new();
+        for &i in &voter_indices {
+            let voter_id = setup.peer_set.sorted_peer_ids[i];
+            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
+            let vote = Vote::new(
+                1,
+                block_hash_v1,
+                voter_sk.sign(&block_hash_v1),
+                voter_id,
+                leader_v1,
+            );
+            votes.insert(vote.clone());
+            manager.handle_vote(vote).unwrap();
+        }
+
+        // Create and process M-notarization to actually progress to view 2
+        let m_notarization =
+            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_v1, leader_v1);
+        manager.handle_m_notarization(m_notarization).unwrap();
+
+        // Verify we're now in view 2
+        assert_eq!(manager.current_view_number(), 2);
+
+        // Now create conflicting votes for view 1 (different block hash)
+        let conflicting_block_hash = [99u8; 32];
+        let conflicting_voter_indices = [4, 5];
+        for &i in &conflicting_voter_indices {
+            let voter_id = setup.peer_set.sorted_peer_ids[i];
+            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
+            let conflicting_vote = Vote::new(
+                1,
+                conflicting_block_hash,
+                voter_sk.sign(&conflicting_block_hash),
+                voter_id,
+                leader_v1,
+            );
+            let result = manager.handle_vote(conflicting_vote);
+
+            // Check if we get ShouldNullifyRange when threshold is reached
+            if let Ok(ViewProgressEvent::ShouldNullifyRange { start_view }) = result {
+                assert_eq!(
+                    start_view, 1,
+                    "Should trigger nullify range starting from view 1"
+                );
+            }
+        }
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_handle_nullify_triggers_cascade_for_past_view() {
+        let setup = create_test_peer_setup(6);
+        let (mut manager, path): (ViewProgressManager<6, 1, 3>, String) =
+            create_test_manager(&setup, 2);
+
+        // Setup: Progress to view 2 first
+        let leader_v1 = setup.peer_set.sorted_peer_ids[1];
+
+        // Create and add block for view 1
+        let leader_sk = setup.peer_id_to_secret_key.get(&leader_v1).unwrap().clone();
+        let block_v1 =
+            create_test_block_with_sk(1, leader_v1, Block::genesis_hash(), leader_sk.clone(), 1);
+        let block_hash_v1 = block_v1.get_hash();
+
+        // Process block for view 1
+        manager.handle_block_proposal(block_v1).unwrap();
+
+        // Add votes for M-notarization on view 1
+        // Leader is at index 1, so use indices 0, 2, 3 to avoid conflict
+        let voter_indices = [0, 2, 3];
+        let mut votes = HashSet::new();
+        for &i in &voter_indices {
+            let voter_id = setup.peer_set.sorted_peer_ids[i];
+            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
+            let vote = Vote::new(
+                1,
+                block_hash_v1,
+                voter_sk.sign(&block_hash_v1),
+                voter_id,
+                leader_v1,
+            );
+            votes.insert(vote.clone());
+            manager.handle_vote(vote).unwrap();
+        }
+
+        // Create and process M-notarization to actually progress to view 2
+        let m_notarization =
+            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_v1, leader_v1);
+        manager.handle_m_notarization(m_notarization).unwrap();
+
+        // Verify we're now in view 2
+        assert_eq!(manager.current_view_number(), 2);
+
+        // Now send nullify messages for view 1 (past view) to trigger cascade
+        for i in 0..3 {
+            let nullify = create_test_nullify(i, 1, leader_v1, &setup);
+            let result = manager.handle_nullify(nullify);
+
+            // When we reach the threshold (2F+1 = 3), should trigger cascade
+            if i == 2 {
+                match result {
+                    Ok(ViewProgressEvent::ShouldCascadeNullification {
+                        start_view,
+                        should_broadcast_nullification,
+                    }) => {
+                        assert_eq!(start_view, 1, "Cascade should start from view 1");
+                        assert!(
+                            should_broadcast_nullification,
+                            "Should broadcast nullification"
+                        );
+                    }
+                    other => {
+                        panic!("Expected ShouldCascadeNullification, got {:?}", other);
+                    }
+                }
+            }
+        }
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_handle_nullification_triggers_cascade_for_past_view() {
+        let setup = create_test_peer_setup(6);
+        let (mut manager, path): (ViewProgressManager<6, 1, 3>, String) =
+            create_test_manager(&setup, 2);
+
+        // Setup: Progress to view 2 first
+        let leader_v1 = setup.peer_set.sorted_peer_ids[1];
+
+        // Create and add block for view 1
+        let leader_sk = setup.peer_id_to_secret_key.get(&leader_v1).unwrap().clone();
+        let block_v1 =
+            create_test_block_with_sk(1, leader_v1, Block::genesis_hash(), leader_sk.clone(), 1);
+        let block_hash_v1 = block_v1.get_hash();
+
+        // Process block for view 1
+        manager.handle_block_proposal(block_v1).unwrap();
+
+        // Add votes for M-notarization on view 1
+        // Leader is at index 1, so use indices 0, 2, 3 to avoid conflict
+        let voter_indices = [0, 2, 3];
+        let mut votes = HashSet::new();
+        for &i in &voter_indices {
+            let voter_id = setup.peer_set.sorted_peer_ids[i];
+            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
+            let vote = Vote::new(
+                1,
+                block_hash_v1,
+                voter_sk.sign(&block_hash_v1),
+                voter_id,
+                leader_v1,
+            );
+            votes.insert(vote.clone());
+            manager.handle_vote(vote).unwrap();
+        }
+
+        // Create and process M-notarization to actually progress to view 2
+        let m_notarization =
+            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_v1, leader_v1);
+        manager.handle_m_notarization(m_notarization).unwrap();
+
+        // Verify we're now in view 2
+        assert_eq!(manager.current_view_number(), 2);
+
+        // Create an aggregated nullification for view 1 (past view)
+        let mut nullify_messages = HashSet::new();
+        for i in 0..3 {
+            let nullify = create_test_nullify(i, 1, leader_v1, &setup);
+            nullify_messages.insert(nullify);
+        }
+
+        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_v1);
+
+        // Process the aggregated nullification for the past view
+        let result = manager.handle_nullification(nullification);
+
+        match result {
+            Ok(ViewProgressEvent::ShouldCascadeNullification {
+                start_view,
+                should_broadcast_nullification: _,
+            }) => {
+                assert_eq!(start_view, 1, "Cascade should start from view 1");
+            }
+            other => {
+                panic!("Expected ShouldCascadeNullification, got {:?}", other);
+            }
+        }
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_select_parent_after_cascade_nullification() {
+        let setup = create_test_peer_setup(6);
+        let (mut manager, path): (ViewProgressManager<6, 1, 3>, String) =
+            create_test_manager(&setup, 2);
+
+        // Setup: Progress through view 1
+        let leader_v1 = setup.peer_set.sorted_peer_ids[1];
+
+        // Create and process block for view 1
+        let leader_sk_v1 = setup.peer_id_to_secret_key.get(&leader_v1).unwrap().clone();
+        let block_v1 =
+            create_test_block_with_sk(1, leader_v1, Block::genesis_hash(), leader_sk_v1, 1);
+        let block_hash_v1 = block_v1.get_hash();
+
+        manager.handle_block_proposal(block_v1).unwrap();
+
+        // Add votes for M-notarization on view 1
+        // Leader is at index 1, so use indices 0, 2, 3 to avoid conflict
+        let voter_indices = [0, 2, 3];
+        let mut votes = HashSet::new();
+        for &i in &voter_indices {
+            let voter_id = setup.peer_set.sorted_peer_ids[i];
+            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
+            let vote = Vote::new(
+                1,
+                block_hash_v1,
+                voter_sk.sign(&block_hash_v1),
+                voter_id,
+                leader_v1,
+            );
+            votes.insert(vote.clone());
+            manager.handle_vote(vote).unwrap();
+        }
+
+        // Create and process M-notarization to actually progress to view 2
+        let m_notarization =
+            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_v1, leader_v1);
+        manager.handle_m_notarization(m_notarization).unwrap();
+
+        // Now in view 2
+        assert_eq!(manager.current_view_number(), 2);
+
+        // Before nullification: select_parent should return view 1's block hash
+        let parent_before = manager.select_parent(3);
+        assert_eq!(
+            parent_before, block_hash_v1,
+            "Before nullification, select_parent should return view 1's block"
+        );
+
+        // Mark view 1 as nullified (simulating cascade)
+        manager.mark_nullified(1).unwrap();
+
+        // select_parent should now skip view 1 and return the genesis/previously committed hash
+        let parent_after = manager.select_parent(3);
+        let expected_parent = manager.view_chain.previously_committed_block_hash;
+        assert_eq!(
+            parent_after, expected_parent,
+            "After nullifying view 1, select_parent should return previously committed block"
+        );
+
+        std::fs::remove_file(path).unwrap();
     }
 }

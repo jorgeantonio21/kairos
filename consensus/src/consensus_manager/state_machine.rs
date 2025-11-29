@@ -519,6 +519,90 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             ViewProgressEvent::BroadcastConsensusMessage { message } => {
                 self.broadcast_consensus_message(*message)
             }
+            ViewProgressEvent::ShouldCascadeNullification {
+                start_view,
+                should_broadcast_nullification,
+            } => {
+                let current_view = self.view_manager.current_view_number();
+
+                slog::warn!(
+                    self.logger,
+                    "Cascading nullification from view {} through {} (inclusive)",
+                    start_view,
+                    current_view
+                );
+
+                // 1. Broadcast the nullification for the view that triggered the cascade (if
+                //    needed)
+                if should_broadcast_nullification
+                    && let Err(e) = self.broadcast_nullification(start_view)
+                {
+                    slog::debug!(
+                        self.logger,
+                        "Failed to broadcast nullification for view {}: {}",
+                        start_view,
+                        e
+                    );
+                }
+
+                // 2. Nullify all views from start_view to current_view
+                for view in (start_view + 1)..=current_view {
+                    if let Err(e) = self.nullify_view(view) {
+                        slog::debug!(
+                            self.logger,
+                            "View {} already nullified or error during cascade: {}",
+                            view,
+                            e
+                        );
+                    }
+                }
+
+                // 2. Progress to a new fresh view
+                let new_view = current_view + 1;
+
+                // 3. Find the most recent valid parent (skips all nullified views)
+                let parent_hash = self.view_manager.select_parent(new_view);
+                let leader = self.view_manager.leader_for_view(new_view)?;
+
+                slog::info!(
+                    self.logger,
+                    "After cascade: progressing to new view {} with parent {:?}",
+                    new_view,
+                    parent_hash
+                );
+
+                // 4. Progress to the new view
+                self.progress_to_next_view(new_view, leader, parent_hash)?;
+
+                Ok(())
+            }
+            ViewProgressEvent::ShouldNullifyRange { start_view } => {
+                let current_view = self.view_manager.current_view_number();
+
+                slog::warn!(
+                    self.logger,
+                    "Nullifying range from view {} through {} (inclusive)",
+                    start_view,
+                    current_view
+                );
+
+                // Send nullify messages for all views from start_view to current_view (INCLUSIVE)
+                // This marks them as has_nullified locally and broadcasts nullify votes,
+                // but does NOT progress to a new view - we must wait for a Nullification
+                // (aggregated proof with 2F+1 signatures) before we can safely progress.
+                for view in start_view..=current_view {
+                    if let Err(e) = self.nullify_view(view) {
+                        slog::debug!(
+                            self.logger,
+                            "View {} already nullified or error: {}",
+                            view,
+                            e
+                        );
+                    }
+                }
+
+                Ok(())
+            }
         }
     }
 
@@ -724,15 +808,18 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             view_ctx.create_nullify_for_byzantine(&self.secret_key)?
         } else {
             // NOTE: If the current replica attempts to nullify a message before voting, it could be
-            // timeout OR Byzantine We can't distinguish here, so we check if there's
-            // conflicting evidence
-            let conflicting_count = view_ctx.nullify_messages.len() + view_ctx.num_invalid_votes;
+            // timeout OR Byzantine. We distinguish based on the type of evidence:
+            let num_conflicting_votes = view_ctx.num_invalid_votes;
+            let num_nullify_messages = view_ctx.nullify_messages.len();
+            let combined_count = num_conflicting_votes + num_nullify_messages;
 
-            if conflicting_count > 2 * F {
-                // Byzantine behavior detected before voting
+            if num_conflicting_votes > F || combined_count > 2 * F {
+                // Byzantine behavior detected:
+                // - Conflicting votes > F means equivocation (can't finalize)
+                // - Combined evidence > 2F indicates Byzantine quorum
                 view_ctx.create_nullify_for_byzantine(&self.secret_key)?
             } else {
-                // Timeout
+                // Timeout (no strong evidence of Byzantine behavior)
                 view_ctx.create_nullify_for_timeout(&self.secret_key)?
             }
         };

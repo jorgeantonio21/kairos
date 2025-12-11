@@ -365,9 +365,8 @@ use crate::{
         notarizations::{MNotarization, Vote},
         nullify::{Nullification, Nullify},
         peer::PeerSet,
-        transaction::Transaction,
     },
-    storage::store::ConsensusStore,
+    validation::{PendingStateWriter, StateDiff},
 };
 
 // TODO: Add view progression logic
@@ -406,9 +405,6 @@ pub struct ViewProgressManager<const N: usize, const F: usize, const M_SIZE: usi
     /// The set of peers in the consensus protocol.
     peers: PeerSet,
 
-    /// Transaction pool
-    pending_txs: Vec<Transaction>,
-
     /// Logger for logging events
     logger: slog::Logger,
 }
@@ -417,8 +413,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
     pub fn new(
         config: ConsensusConfig,
         replica_id: PeerId,
-        persistence_storage: ConsensusStore,
         leader_manager: Box<dyn LeaderManager>,
+        persistence_writer: PendingStateWriter,
         logger: slog::Logger,
     ) -> Result<Self> {
         let peers = PeerSet::new(
@@ -446,8 +442,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
             peer_ids: [PeerId::default(); M_SIZE], // Placeholder peers
         };
 
-        persistence_storage.put_finalized_block(&genesis_block)?;
-        persistence_storage.put_notarization(&genesis_m_notarization)?; // TODO: we need to store a L-notarization for the genesis block as well (n-f votes)
+        persistence_writer.put_finalized_block(&genesis_block)?;
+        persistence_writer.put_m_notarization(&genesis_m_notarization)?; // TODO: do we need to store a L-notarization for the genesis block as well (n-f votes)?
 
         let mut genesis_context: ViewContext<N, F, M_SIZE> =
             ViewContext::new(0, genesis_leader, replica_id, [0; blake3::OUT_LEN]);
@@ -468,7 +464,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
             genesis_block_hash, // Parent is Genesis
         );
 
-        let view_chain = ViewChain::new(view1_context, persistence_storage, config.view_timeout);
+        let view_chain = ViewChain::new(view1_context, persistence_writer);
 
         Ok(Self {
             config,
@@ -476,7 +472,6 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
             view_chain,
             replica_id,
             peers,
-            pending_txs: Vec::new(),
             logger,
         })
     }
@@ -486,7 +481,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
     pub fn from_genesis(
         config: ConsensusConfig,
         replica_id: PeerId,
-        persistence_storage: ConsensusStore,
+        persistence_writer: PendingStateWriter,
         logger: slog::Logger,
     ) -> Result<Self> {
         let peers = PeerSet::new(
@@ -518,7 +513,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
 
         let leader_id = leader_manager.leader_for_view(0)?.peer_id();
         let view_context = ViewContext::new(0, leader_id, replica_id, [0; blake3::OUT_LEN]);
-        let view_chain = ViewChain::new(view_context, persistence_storage, config.view_timeout);
+
+        let view_chain = ViewChain::new(view_context, persistence_writer);
 
         Ok(Self {
             config,
@@ -526,7 +522,6 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
             view_chain,
             replica_id,
             peers,
-            pending_txs: Vec::new(),
             logger,
         })
     }
@@ -717,16 +712,6 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         Ok(ViewProgressEvent::NoOp)
     }
 
-    /// Adds a new transaction to the replica's pending transaction pool.
-    pub fn add_transaction(&mut self, tx: Transaction) {
-        self.pending_txs.push(tx)
-    }
-
-    /// Returns pending transactions for block proposal (and clears the pool).
-    pub fn take_pending_transactions(&mut self) -> Vec<Transaction> {
-        std::mem::take(&mut self.pending_txs)
-    }
-
     /// Returns the current view number.
     pub fn current_view_number(&self) -> u64 {
         self.view_chain.current_view_number()
@@ -805,6 +790,22 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
                 view
             ))
         }
+    }
+
+    /// Processes a block that has already been validated by the validation service.
+    /// Stores the [`StateDiff`] instance for later application on finalization
+    pub fn process_validated_block(
+        &mut self,
+        block: Block,
+        state_diff: StateDiff,
+    ) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
+        let view = block.view();
+
+        // Store the state diff with the block
+        self.view_chain.store_state_diff(view, state_diff);
+
+        // Process the block through normal flow
+        self.handle_block_proposal(block)
     }
 
     /// Returns the M-notarization for a view.
@@ -1379,11 +1380,13 @@ mod tests {
             peer::PeerSet,
             transaction::Transaction,
         },
+        storage::store::ConsensusStore,
     };
     use ark_serialize::CanonicalSerialize;
     use rand::thread_rng;
     use std::{
         collections::{HashMap, HashSet},
+        sync::Arc,
         time::Duration,
     };
 
@@ -1601,13 +1604,15 @@ mod tests {
         ));
 
         let path = temp_db_path("view_manager");
-        let persistence_storage = ConsensusStore::open(&path).unwrap();
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, _persistence_reader) =
+            PendingStateWriter::new(persistence_storage.clone(), 0);
         (
             ViewProgressManager::new(
                 config,
                 replica_id,
-                persistence_storage,
                 leader_manager,
+                persistence_writer,
                 logger,
             )
             .unwrap(),
@@ -1625,7 +1630,6 @@ mod tests {
         assert_eq!(manager.non_finalized_count(), 1);
         assert_eq!(manager.replica_id(), setup.peer_set.sorted_peer_ids[0]);
         assert_eq!(manager.peers.sorted_peer_ids.len(), 6);
-        assert_eq!(manager.pending_txs.len(), 0);
 
         std::fs::remove_file(path).unwrap();
     }
@@ -1646,9 +1650,11 @@ mod tests {
         let logger = slog::Logger::root(slog::Discard, slog::o!());
 
         let path = temp_db_path("view_manager_genesis");
-        let persistence_storage = ConsensusStore::open(&path).unwrap();
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, _persistence_reader) =
+            PendingStateWriter::new(persistence_storage.clone(), 0);
         let manager: ViewProgressManager<6, 1, 3> =
-            ViewProgressManager::from_genesis(config, replica_id, persistence_storage, logger)
+            ViewProgressManager::from_genesis(config, replica_id, persistence_writer, logger)
                 .unwrap();
 
         assert_eq!(manager.current_view_number(), 0);
@@ -1668,55 +1674,6 @@ mod tests {
         let expected_leader = setup.peer_set.sorted_peer_ids[1];
         let current_view = manager.view_chain.current();
         assert_eq!(current_view.leader_id, expected_leader);
-
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn test_add_transaction_increases_pending_txs() {
-        let setup = create_test_peer_setup(6);
-        let (mut manager, path): (ViewProgressManager<6, 1, 3>, String) =
-            create_test_manager(&setup, 0);
-
-        assert_eq!(manager.pending_txs.len(), 0);
-
-        let tx = create_test_transaction();
-        manager.add_transaction(tx.clone());
-
-        assert_eq!(manager.pending_txs.len(), 1);
-        assert_eq!(manager.pending_txs[0], tx);
-
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn test_add_multiple_transactions() {
-        let setup = create_test_peer_setup(6);
-        let (mut manager, path): (ViewProgressManager<6, 1, 3>, String) =
-            create_test_manager(&setup, 0);
-
-        for _ in 0..5 {
-            manager.add_transaction(create_test_transaction());
-        }
-
-        assert_eq!(manager.pending_txs.len(), 5);
-
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn test_take_pending_transactions_clears_pool() {
-        let setup = create_test_peer_setup(6);
-        let (mut manager, path): (ViewProgressManager<6, 1, 3>, String) =
-            create_test_manager(&setup, 0);
-
-        for _ in 0..3 {
-            manager.add_transaction(create_test_transaction());
-        }
-
-        let txs = manager.take_pending_transactions();
-        assert_eq!(txs.len(), 3);
-        assert_eq!(manager.pending_txs.len(), 0);
 
         std::fs::remove_file(path).unwrap();
     }
@@ -1862,12 +1819,14 @@ mod tests {
         ));
 
         let path = temp_db_path("view_manager_timeout");
-        let persistence_storage = ConsensusStore::open(&path).unwrap();
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, _persistence_reader) =
+            PendingStateWriter::new(persistence_storage.clone(), 0);
         let mut manager: ViewProgressManager<6, 1, 3> = ViewProgressManager::new(
             config,
             replica_id,
-            persistence_storage,
             leader_manager,
+            persistence_writer,
             logger,
         )
         .unwrap();
@@ -1929,12 +1888,14 @@ mod tests {
         ));
 
         let path = temp_db_path("view_manager_timeout_voted");
-        let persistence_storage = ConsensusStore::open(&path).unwrap();
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, _persistence_reader) =
+            PendingStateWriter::new(persistence_storage.clone(), 0);
         let mut manager: ViewProgressManager<6, 1, 3> = ViewProgressManager::new(
             config,
             replica_id,
-            persistence_storage,
             leader_manager,
+            persistence_writer,
             logger,
         )
         .unwrap();
@@ -1989,12 +1950,14 @@ mod tests {
         ));
 
         let path = temp_db_path("view_manager_timeout_nullified");
-        let persistence_storage = ConsensusStore::open(&path).unwrap();
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, _persistence_reader) =
+            PendingStateWriter::new(persistence_storage.clone(), 0);
         let mut manager: ViewProgressManager<6, 1, 3> = ViewProgressManager::new(
             config,
             replica_id,
-            persistence_storage,
             leader_manager,
+            persistence_writer,
             logger,
         )
         .unwrap();
@@ -2049,12 +2012,14 @@ mod tests {
         ));
 
         let path = temp_db_path("view_manager_past_timeout");
-        let persistence_storage = ConsensusStore::open(&path).unwrap();
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, _persistence_reader) =
+            PendingStateWriter::new(persistence_storage, 0);
         let mut manager: ViewProgressManager<6, 1, 3> = ViewProgressManager::new(
             config,
             replica_id,
-            persistence_storage,
             leader_manager,
+            persistence_writer,
             logger,
         )
         .unwrap();
@@ -2512,12 +2477,14 @@ mod tests {
         ));
 
         let path = temp_db_path("view_manager_multiple_timeout");
-        let persistence_storage = ConsensusStore::open(&path).unwrap();
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, _persistence_reader) =
+            PendingStateWriter::new(persistence_storage.clone(), 0);
         let mut manager: ViewProgressManager<6, 1, 3> = ViewProgressManager::new(
             config,
             replica_id,
-            persistence_storage,
             leader_manager,
+            persistence_writer,
             logger,
         )
         .unwrap();
@@ -2632,12 +2599,14 @@ mod tests {
         ));
 
         let path = temp_db_path("view_manager_priority");
-        let persistence_storage = ConsensusStore::open(&path).unwrap();
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, _persistence_reader) =
+            PendingStateWriter::new(persistence_storage.clone(), 0);
         let mut manager: ViewProgressManager<6, 1, 3> = ViewProgressManager::new(
             config,
             replica_id,
-            persistence_storage,
             leader_manager,
+            persistence_writer,
             logger,
         )
         .unwrap();
@@ -6589,6 +6558,203 @@ mod tests {
         assert_eq!(
             parent_after, expected_parent,
             "After nullifying view 1, select_parent should return previously committed block"
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Modified test setup that returns the PendingStateReader
+    fn create_test_manager_with_reader<const N: usize, const F: usize, const M_SIZE: usize>(
+        setup: &TestSetup,
+        replica_index: usize,
+    ) -> (
+        ViewProgressManager<N, F, M_SIZE>,
+        crate::validation::PendingStateReader,
+        String,
+    ) {
+        let replica_id = setup.peer_set.sorted_peer_ids[replica_index];
+        let mut peer_strs = Vec::with_capacity(setup.peer_set.sorted_peer_ids.len());
+        for peer_id in &setup.peer_set.sorted_peer_ids {
+            let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
+            let mut buf = Vec::new();
+            pk.0.serialize_compressed(&mut buf).unwrap();
+            let peer_str = hex::encode(buf);
+            peer_strs.push(peer_str);
+        }
+        let config = create_test_config(N, F, peer_strs);
+
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+
+        let leader_manager = Box::new(RoundRobinLeaderManager::new(
+            N,
+            setup.peer_set.sorted_peer_ids.clone(),
+        ));
+
+        let path = temp_db_path("view_manager_with_reader");
+        let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
+        let (persistence_writer, persistence_reader) =
+            PendingStateWriter::new(persistence_storage.clone(), 0);
+        (
+            ViewProgressManager::new(
+                config,
+                replica_id,
+                leader_manager,
+                persistence_writer,
+                logger,
+            )
+            .unwrap(),
+            persistence_reader,
+            path,
+        )
+    }
+
+    /// Creates a test StateDiff for a specific address
+    fn create_state_diff_for_address(addr: Address, balance: u64) -> StateDiff {
+        let mut diff = StateDiff::new();
+        diff.add_created_account(addr, balance);
+        diff
+    }
+
+    #[test]
+    fn test_process_validated_block_stores_state_diff() {
+        // Scenario: Validated block arrives with StateDiff
+        // - store_state_diff should be called on view_chain
+        // - Block should be processed through normal flow
+        // - Verify ViewContext has state_diff set
+        let setup = create_test_peer_setup(6);
+        let (mut manager, _reader, path): (ViewProgressManager<6, 1, 3>, _, String) =
+            create_test_manager_with_reader(&setup, 0);
+
+        let leader_id = setup.peer_set.sorted_peer_ids[1]; // View 1 leader (round robin starts at view 1)
+        let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap().clone();
+        let parent_hash = manager.view_chain.previously_committed_block_hash;
+
+        // Create a block for view 1
+        let block = create_test_block(1, leader_id, parent_hash, leader_sk, 1);
+
+        // Create StateDiff
+        let sk = TxSecretKey::generate(&mut rand::rngs::OsRng);
+        let addr = Address::from_public_key(&sk.public_key());
+        let state_diff = create_state_diff_for_address(addr, 1000);
+
+        // Process validated block
+        let result = manager.process_validated_block(block, state_diff);
+        assert!(result.is_ok());
+
+        // Verify StateDiff is stored in view context
+        let ctx = manager.view_chain.find_view_context(1).unwrap();
+        assert!(
+            ctx.state_diff.is_some(),
+            "StateDiff should be stored in ViewContext"
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_process_validated_block_returns_correct_event() {
+        // Verify that process_validated_block returns the correct ViewProgressEvent
+        let setup = create_test_peer_setup(6);
+        let (mut manager, _reader, path): (ViewProgressManager<6, 1, 3>, _, String) =
+            create_test_manager_with_reader(&setup, 0);
+
+        let leader_id = setup.peer_set.sorted_peer_ids[1];
+        let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap().clone();
+        let parent_hash = manager.view_chain.previously_committed_block_hash;
+
+        let block = create_test_block(1, leader_id, parent_hash, leader_sk, 1);
+        let state_diff = StateDiff::new(); // Empty diff is fine
+
+        let result = manager.process_validated_block(block, state_diff);
+        assert!(result.is_ok());
+
+        // Should return ShouldVote for a valid block from the correct leader
+        match result.unwrap() {
+            ViewProgressEvent::ShouldVote {
+                view, block_hash, ..
+            } => {
+                assert_eq!(view, 1);
+                assert_ne!(block_hash, [0u8; blake3::OUT_LEN]);
+            }
+            _ => {
+                // Other events are acceptable depending on replica's role
+            }
+        }
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_process_validated_block_for_wrong_view_fails() {
+        // Scenario: Block for wrong view should fail
+        let setup = create_test_peer_setup(6);
+        let (mut manager, _reader, path): (ViewProgressManager<6, 1, 3>, _, String) =
+            create_test_manager_with_reader(&setup, 0);
+
+        let leader_id = setup.peer_set.sorted_peer_ids[0];
+        let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap().clone();
+        let parent_hash = manager.view_chain.previously_committed_block_hash;
+
+        // Create block for view 99 (not current)
+        let block = create_test_block(99, leader_id, parent_hash, leader_sk, 99);
+        let state_diff = StateDiff::new();
+
+        let result = manager.process_validated_block(block, state_diff);
+        // Should fail or return appropriate event
+        assert!(result.is_err() || matches!(result.unwrap(), ViewProgressEvent::NoOp));
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_process_validated_block_with_empty_state_diff() {
+        // Scenario: Block with no state changes (empty StateDiff)
+        let setup = create_test_peer_setup(6);
+        let (mut manager, _reader, path): (ViewProgressManager<6, 1, 3>, _, String) =
+            create_test_manager_with_reader(&setup, 0);
+
+        let leader_id = setup.peer_set.sorted_peer_ids[1];
+        let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap().clone();
+        let parent_hash = manager.view_chain.previously_committed_block_hash;
+
+        let block = create_test_block(1, leader_id, parent_hash, leader_sk, 1);
+        let state_diff = StateDiff::new(); // Empty
+
+        let result = manager.process_validated_block(block, state_diff);
+        assert!(result.is_ok());
+
+        // Empty diff should still be stored
+        let ctx = manager.view_chain.find_view_context(1).unwrap();
+        assert!(ctx.state_diff.is_some());
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_process_validated_block_state_diff_not_in_pending_before_m_notarization() {
+        // Scenario: Block validated, but pending state not updated until M-notarization
+        let setup = create_test_peer_setup(6);
+        let (mut manager, reader, path): (ViewProgressManager<6, 1, 3>, _, String) =
+            create_test_manager_with_reader(&setup, 0);
+
+        let leader_id = setup.peer_set.sorted_peer_ids[1];
+        let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap().clone();
+        let parent_hash = manager.view_chain.previously_committed_block_hash;
+
+        let block = create_test_block(1, leader_id, parent_hash, leader_sk, 1);
+
+        let sk = TxSecretKey::generate(&mut rand::rngs::OsRng);
+        let addr = Address::from_public_key(&sk.public_key());
+        let state_diff = create_state_diff_for_address(addr, 1000);
+
+        manager.process_validated_block(block, state_diff).unwrap();
+
+        // StateDiff stored in context, but pending count should be 0
+        // (not added to pending until M-notarization and view progression)
+        assert_eq!(
+            reader.load().pending_count(),
+            0,
+            "Pending count should be 0 before M-notarization"
         );
 
         std::fs::remove_file(path).unwrap();

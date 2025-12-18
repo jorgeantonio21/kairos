@@ -346,6 +346,31 @@ impl ConsensusStore {
         let key = public_key.to_bytes();
         unsafe { self.get_blob_value::<Account, _>(ACCOUNTS, key) }
     }
+
+    /// Puts multiple accounts into the database in a single transaction.
+    /// This is significantly faster than calling put_account repeatedly.
+    pub fn batch_put_accounts(&self, accounts: &[Account]) -> Result<()> {
+        let write_txn = self
+            .db
+            .begin_write()
+            .context("Failed to begin write transaction")?;
+        {
+            let mut table = write_txn
+                .open_table(ACCOUNTS)
+                .context("Failed to open accounts table")?;
+
+            for account in accounts {
+                let key = account.key();
+                let bytes = account.value()?;
+                table
+                    .insert(key.as_slice(), bytes.as_ref())
+                    .context("Failed to insert account")?;
+            }
+        }
+        write_txn
+            .commit()
+            .context("Failed to commit write transaction")
+    }
 }
 
 #[cfg(test)]
@@ -414,14 +439,14 @@ mod tests {
 
             // Prepare a transaction to embed in block
             let (sk, pk) = gen_keypair();
-            let tx = Transaction::new_transfer(
+            let tx = Arc::new(Transaction::new_transfer(
                 Address::from_public_key(&pk),
                 Address::from_bytes([7u8; 32]),
                 42,
                 9,
                 1_000,
                 &sk,
-            );
+            ));
 
             let parent: [u8; blake3::OUT_LEN] = [1u8; blake3::OUT_LEN];
             let (leader_sk, leader_pk) = gen_bls_keypair();
@@ -458,14 +483,14 @@ mod tests {
 
             // Prepare a transaction to embed in block
             let (sk, pk) = gen_keypair();
-            let tx = Transaction::new_transfer(
+            let tx = Arc::new(Transaction::new_transfer(
                 Address::from_public_key(&pk),
                 Address::from_bytes([7u8; 32]),
                 42,
                 9,
                 1_000,
                 &sk,
-            );
+            ));
 
             let parent: [u8; blake3::OUT_LEN] = [1u8; blake3::OUT_LEN];
             let (leader_sk, _leader_pk) = gen_bls_keypair();
@@ -493,14 +518,14 @@ mod tests {
 
             // Prepare a transaction to embed in block
             let (sk, pk) = gen_keypair();
-            let tx = Transaction::new_transfer(
+            let tx = Arc::new(Transaction::new_transfer(
                 Address::from_public_key(&pk),
                 Address::from_bytes([7u8; 32]),
                 42,
                 9,
                 1_000,
                 &sk,
-            );
+            ));
 
             let parent: [u8; blake3::OUT_LEN] = [1u8; blake3::OUT_LEN];
             let (leader_sk, _leader_pk) = gen_bls_keypair();
@@ -601,14 +626,14 @@ mod tests {
             // Base block
             let parent: [u8; blake3::OUT_LEN] = [2u8; blake3::OUT_LEN];
             let (sk0, pk0) = gen_keypair();
-            let tx0 = Transaction::new_transfer(
+            let tx0 = Arc::new(Transaction::new_transfer(
                 Address::from_public_key(&pk0),
                 Address::from_bytes([1u8; 32]),
                 1,
                 0,
                 1,
                 &sk0,
-            );
+            ));
             let (leader_sk, leader_pk) = gen_bls_keypair();
             let signature = leader_sk.sign(b"block proposal");
             let block = Block::new(

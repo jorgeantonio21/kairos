@@ -19,13 +19,13 @@
 
 use std::time::Duration;
 
-use commonware_cryptography::{Signer, ed25519};
 use commonware_runtime::{Clock, Runner};
 use consensus::consensus::ConsensusMessage;
-use consensus::crypto::aggregated::{BlsSecretKey, PeerId};
+use consensus::crypto::aggregated::BlsSecretKey;
 use consensus::state::block::Block;
 use consensus::state::transaction::Transaction;
 use p2p::config::{P2PConfig, ValidatorPeerInfo};
+use p2p::identity::ValidatorIdentity;
 use p2p::service::spawn;
 use rtrb::RingBuffer;
 use slog::Logger;
@@ -61,7 +61,9 @@ fn test_p2p_service_spawn_and_shutdown() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer = ed25519::PrivateKey::from_seed(7001);
+        // Create identity from BLS key (ed25519 is derived)
+        let bls_key = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity = ValidatorIdentity::from_bls_key(bls_key);
         let config = create_test_config(19600);
         let logger = create_test_logger();
 
@@ -74,7 +76,7 @@ fn test_p2p_service_spawn_and_shutdown() {
         let handle = spawn(
             commonware_runtime::tokio::Runner::default(),
             config,
-            signer,
+            identity,
             consensus_prod,
             tx_prod,
             broadcast_cons,
@@ -102,11 +104,14 @@ fn test_p2p_service_broadcast_notification() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer1 = ed25519::PrivateKey::from_seed(7002);
-        let signer2 = ed25519::PrivateKey::from_seed(7003);
+        // Create identities from BLS keys (ed25519 is derived deterministically)
+        let bls_key1 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let bls_key2 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity1 = ValidatorIdentity::from_bls_key(bls_key1);
+        let identity2 = ValidatorIdentity::from_bls_key(bls_key2);
 
-        let pk1 = signer1.public_key();
-        let pk2 = signer2.public_key();
+        let pk1 = identity1.ed25519_public_key();
+        let pk2 = identity2.ed25519_public_key();
         let pk1_hex = hex::encode(pk1.as_ref());
         let pk2_hex = hex::encode(pk2.as_ref());
 
@@ -118,14 +123,14 @@ fn test_p2p_service_broadcast_notification() {
         config1.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk2_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port2).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity2.peer_id(),
         });
 
         let mut config2 = create_test_config(port2);
         config2.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk1_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port1).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity1.peer_id(),
         });
 
         let logger = create_test_logger();
@@ -137,17 +142,20 @@ fn test_p2p_service_broadcast_notification() {
         let (mut broadcast_prod, broadcast_cons) =
             RingBuffer::<ConsensusMessage<N, F, M_SIZE>>::new(100);
 
+        // Get the ed25519 key for node2 before consuming identity2
+        let signer2 = identity2.clone_ed25519_private_key();
+
         let handle1 = spawn(
             commonware_runtime::tokio::Runner::default(),
             config1,
-            signer1,
+            identity1,
             consensus_prod,
             tx_prod,
             broadcast_cons,
             logger.clone(),
         );
 
-        // Create network service for node2 (the receiver)
+        // Create network service for node2 (the receiver) - uses raw ed25519
         let (mut network2, mut receivers2) =
             p2p::network::NetworkService::new(ctx.clone(), signer2, config2, logger).await;
 
@@ -236,11 +244,14 @@ fn test_p2p_service_routes_consensus_messages() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer1 = ed25519::PrivateKey::from_seed(7003);
-        let signer2 = ed25519::PrivateKey::from_seed(7004);
+        // Create identities from BLS keys
+        let bls_key1 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let bls_key2 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity1 = ValidatorIdentity::from_bls_key(bls_key1);
+        let identity2 = ValidatorIdentity::from_bls_key(bls_key2);
 
-        let pk1 = signer1.public_key();
-        let pk2 = signer2.public_key();
+        let pk1 = identity1.ed25519_public_key();
+        let pk2 = identity2.ed25519_public_key();
         let pk1_hex = hex::encode(pk1.as_ref());
         let pk2_hex = hex::encode(pk2.as_ref());
 
@@ -254,8 +265,11 @@ fn test_p2p_service_routes_consensus_messages() {
         config2.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk1_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port1).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity1.peer_id(),
         });
+
+        // Get the ed25519 key for node1 before consuming identity1
+        let signer1 = identity1.clone_ed25519_private_key();
 
         // Create P2P service for node2 (receiver) - runs in separate thread+runtime
         let (consensus_prod, mut consensus_cons) =
@@ -267,7 +281,7 @@ fn test_p2p_service_routes_consensus_messages() {
         let handle2 = spawn(
             commonware_runtime::tokio::Runner::default(),
             config2,
-            signer2,
+            identity2,
             consensus_prod,
             tx_prod,
             broadcast_cons,
@@ -287,7 +301,7 @@ fn test_p2p_service_routes_consensus_messages() {
         config1.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk2_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port2).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity1.peer_id(),
         });
 
         // Create network service for node1 (sender) in the test's runtime
@@ -363,11 +377,14 @@ fn test_p2p_service_routes_transaction_messages() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer1 = ed25519::PrivateKey::from_seed(7005);
-        let signer2 = ed25519::PrivateKey::from_seed(7006);
+        // Create identities from BLS keys
+        let bls_key1 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let bls_key2 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity1 = ValidatorIdentity::from_bls_key(bls_key1);
+        let identity2 = ValidatorIdentity::from_bls_key(bls_key2);
 
-        let pk1 = signer1.public_key();
-        let pk2 = signer2.public_key();
+        let pk1 = identity1.ed25519_public_key();
+        let pk2 = identity2.ed25519_public_key();
         let pk1_hex = hex::encode(pk1.as_ref());
         let pk2_hex = hex::encode(pk2.as_ref());
 
@@ -378,8 +395,11 @@ fn test_p2p_service_routes_transaction_messages() {
         config2.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk1_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port1).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity1.peer_id(),
         });
+
+        // Get the ed25519 key for node1 before consuming identity1
+        let signer1 = identity1.clone_ed25519_private_key();
 
         let (consensus_prod, _consensus_cons) =
             RingBuffer::<ConsensusMessage<N, F, M_SIZE>>::new(100);
@@ -390,7 +410,7 @@ fn test_p2p_service_routes_transaction_messages() {
         let handle2 = spawn(
             commonware_runtime::tokio::Runner::default(),
             config2,
-            signer2,
+            identity2,
             consensus_prod,
             tx_prod,
             broadcast_cons,
@@ -401,7 +421,7 @@ fn test_p2p_service_routes_transaction_messages() {
         config1.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk2_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port2).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity1.peer_id(),
         });
 
         let (mut network1, _receivers1) =
@@ -464,7 +484,9 @@ fn test_p2p_service_handles_shutdown_signal() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer = ed25519::PrivateKey::from_seed(7007);
+        // Create identity from BLS key
+        let bls_key = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity = ValidatorIdentity::from_bls_key(bls_key);
         let config = create_test_config(19606);
         let logger = create_test_logger();
 
@@ -477,7 +499,7 @@ fn test_p2p_service_handles_shutdown_signal() {
         let handle = spawn(
             commonware_runtime::tokio::Runner::default(),
             config,
-            signer,
+            identity,
             consensus_prod,
             tx_prod,
             broadcast_cons,
@@ -515,11 +537,14 @@ fn test_bootstrap_completes_with_sufficient_peers() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer1 = ed25519::PrivateKey::from_seed(8001);
-        let signer2 = ed25519::PrivateKey::from_seed(8002);
+        // Create identities from BLS keys
+        let bls_key1 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let bls_key2 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity1 = ValidatorIdentity::from_bls_key(bls_key1);
+        let identity2 = ValidatorIdentity::from_bls_key(bls_key2);
 
-        let pk1 = signer1.public_key();
-        let pk2 = signer2.public_key();
+        let pk1 = identity1.ed25519_public_key();
+        let pk2 = identity2.ed25519_public_key();
         let pk1_hex = hex::encode(pk1.as_ref());
         let pk2_hex = hex::encode(pk2.as_ref());
 
@@ -535,7 +560,7 @@ fn test_bootstrap_completes_with_sufficient_peers() {
         config1.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk2_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port2).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity2.peer_id(),
         });
 
         // Configure node2 with node1 as validator
@@ -545,7 +570,7 @@ fn test_bootstrap_completes_with_sufficient_peers() {
         config2.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk1_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port1).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity1.peer_id(),
         });
 
         let logger = create_test_logger();
@@ -560,7 +585,7 @@ fn test_bootstrap_completes_with_sufficient_peers() {
         let handle1 = spawn(
             commonware_runtime::tokio::Runner::default(),
             config1,
-            signer1,
+            identity1,
             consensus_prod1,
             tx_prod1,
             broadcast_cons1,
@@ -577,7 +602,7 @@ fn test_bootstrap_completes_with_sufficient_peers() {
         let handle2 = spawn(
             commonware_runtime::tokio::Runner::default(),
             config2,
-            signer2,
+            identity2,
             consensus_prod2,
             tx_prod2,
             broadcast_cons2,
@@ -622,9 +647,14 @@ fn test_bootstrap_timeout_when_insufficient_peers() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer = ed25519::PrivateKey::from_seed(8003);
-        let non_existent_signer = ed25519::PrivateKey::from_seed(9999);
-        let non_existent_pk = non_existent_signer.public_key();
+        // Create identity from BLS key
+        let bls_key = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity = ValidatorIdentity::from_bls_key(bls_key);
+
+        // Create a non-existent validator identity for testing timeout
+        let non_existent_bls_key = BlsSecretKey::generate(&mut rand::thread_rng());
+        let non_existent_identity = ValidatorIdentity::from_bls_key(non_existent_bls_key);
+        let non_existent_pk = non_existent_identity.ed25519_public_key();
         let non_existent_pk_hex = hex::encode(non_existent_pk.as_ref());
 
         let port: u16 = 19903;
@@ -639,7 +669,7 @@ fn test_bootstrap_timeout_when_insufficient_peers() {
         config.validators.push(ValidatorPeerInfo {
             ed25519_public_key: non_existent_pk_hex,
             address: Some(format!("127.0.0.1:{}", 19999).parse().unwrap()), // Port not listening
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: non_existent_identity.peer_id(),
         });
 
         let logger = create_test_logger();
@@ -653,7 +683,7 @@ fn test_bootstrap_timeout_when_insufficient_peers() {
         let handle = spawn(
             commonware_runtime::tokio::Runner::default(),
             config,
-            signer,
+            identity,
             consensus_prod,
             tx_prod,
             broadcast_cons,
@@ -697,7 +727,9 @@ fn test_bootstrap_skips_when_no_peers_required() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer = ed25519::PrivateKey::from_seed(8004);
+        // Create identity from BLS key
+        let bls_key = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity = ValidatorIdentity::from_bls_key(bls_key);
 
         let port: u16 = 19904;
 
@@ -719,7 +751,7 @@ fn test_bootstrap_skips_when_no_peers_required() {
         let handle = spawn(
             commonware_runtime::tokio::Runner::default(),
             config,
-            signer,
+            identity,
             consensus_prod,
             tx_prod,
             broadcast_cons,
@@ -757,13 +789,17 @@ fn test_bootstrap_with_three_nodes() {
     let executor = commonware_runtime::tokio::Runner::default();
 
     executor.start(|ctx| async move {
-        let signer1 = ed25519::PrivateKey::from_seed(8005);
-        let signer2 = ed25519::PrivateKey::from_seed(8006);
-        let signer3 = ed25519::PrivateKey::from_seed(8007);
+        // Create identities from BLS keys
+        let bls_key1 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let bls_key2 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let bls_key3 = BlsSecretKey::generate(&mut rand::thread_rng());
+        let identity1 = ValidatorIdentity::from_bls_key(bls_key1);
+        let identity2 = ValidatorIdentity::from_bls_key(bls_key2);
+        let identity3 = ValidatorIdentity::from_bls_key(bls_key3);
 
-        let pk1 = signer1.public_key();
-        let pk2 = signer2.public_key();
-        let pk3 = signer3.public_key();
+        let pk1 = identity1.ed25519_public_key();
+        let pk2 = identity2.ed25519_public_key();
+        let pk3 = identity3.ed25519_public_key();
         let pk1_hex = hex::encode(pk1.as_ref());
         let pk2_hex = hex::encode(pk2.as_ref());
         let pk3_hex = hex::encode(pk3.as_ref());
@@ -779,12 +815,12 @@ fn test_bootstrap_with_three_nodes() {
         config1.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk2_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port2).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity2.peer_id(),
         });
         config1.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk3_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port3).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity3.peer_id(),
         });
 
         // Configure node2 with nodes 1 and 3 as validators
@@ -794,12 +830,12 @@ fn test_bootstrap_with_three_nodes() {
         config2.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk1_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port1).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity1.peer_id(),
         });
         config2.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk3_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port3).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity3.peer_id(),
         });
 
         // Configure node3 with nodes 1 and 2 as validators
@@ -809,12 +845,12 @@ fn test_bootstrap_with_three_nodes() {
         config3.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk1_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port1).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity1.peer_id(),
         });
         config3.validators.push(ValidatorPeerInfo {
             ed25519_public_key: pk2_hex.clone(),
             address: Some(format!("127.0.0.1:{}", port2).parse().unwrap()),
-            bls_peer_id: PeerId::default(),
+            bls_peer_id: identity2.peer_id(),
         });
 
         let logger = create_test_logger();
@@ -829,7 +865,7 @@ fn test_bootstrap_with_three_nodes() {
         let handle1 = spawn(
             commonware_runtime::tokio::Runner::default(),
             config1,
-            signer1,
+            identity1,
             consensus_prod1,
             tx_prod1,
             broadcast_cons1,
@@ -845,7 +881,7 @@ fn test_bootstrap_with_three_nodes() {
         let handle2 = spawn(
             commonware_runtime::tokio::Runner::default(),
             config2,
-            signer2,
+            identity2,
             consensus_prod2,
             tx_prod2,
             broadcast_cons2,
@@ -861,7 +897,7 @@ fn test_bootstrap_with_three_nodes() {
         let handle3 = spawn(
             commonware_runtime::tokio::Runner::default(),
             config3,
-            signer3,
+            identity3,
             consensus_prod3,
             tx_prod3,
             broadcast_cons3,

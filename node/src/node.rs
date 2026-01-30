@@ -10,6 +10,30 @@
 //! - P2P Service
 //! - gRPC Server
 //!
+//! ## Runtime Architecture
+//!
+//! This node uses **two separate tokio runtimes**:
+//!
+//! 1. **P2P Runtime** (`commonware_runtime::tokio::Runner`)
+//!    - Manages the P2P networking layer via commonware-p2p
+//!    - Runs in a dedicated OS thread spawned by `spawn_p2p()`
+//!    - The commonware `Runner::start()` pattern consumes the runner and blocks until completion,
+//!      so it cannot be shared with other services
+//!
+//! 2. **gRPC Runtime** (standard `tokio::runtime::Runtime`)
+//!    - Manages the tonic gRPC server for external API
+//!    - Runs in a dedicated OS thread for isolation
+//!
+//! ### Why Separate Runtimes?
+//!
+//! The separate runtimes provide:
+//! - **Workload isolation**: gRPC (bursty external requests) vs P2P (steady gossip)
+//! - **No contention**: Services communicate via lock-free `ArrayQueue` and `Notify`
+//! - **Independent shutdown**: Each runtime shuts down cleanly without blocking the other
+//! - **Simplicity**: No complex lifetime management across runtime boundaries
+//!
+//! The cost is minimal: one extra OS thread and ~MB of tokio runtime overhead.
+//!
 //! ## Spawn Order
 //!
 //! Services are spawned in dependency order:
@@ -54,6 +78,8 @@ use anyhow::{Context, Result};
 use crossbeam::queue::ArrayQueue;
 use rtrb::RingBuffer;
 use slog::{Logger, o};
+
+use tokio::sync::Notify;
 
 use commonware_runtime::tokio::Runner as TokioRunner;
 use consensus::consensus::ConsensusMessage;
@@ -119,6 +145,9 @@ pub struct ValidatorNode<const N: usize, const F: usize, const M_SIZE: usize> {
 
     /// gRPC server address.
     grpc_addr: SocketAddr,
+
+    /// gRPC server shutdown signal.
+    grpc_shutdown: Arc<Notify>,
 
     /// Node logger.
     logger: Logger,
@@ -250,7 +279,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             logger.new(o!("component" => "grpc")),
         );
 
-        // Spawn gRPC server in a separate thread with its own Tokio runtime
+        // Create shutdown signal for gRPC server
+        let grpc_shutdown = Arc::new(Notify::new());
+        let grpc_shutdown_signal = Arc::clone(&grpc_shutdown);
+
+        // Spawn gRPC server in a separate thread with its own Tokio runtime.
+        // See module docs for why we use a separate runtime instead of sharing
+        // the commonware runtime with P2P.
         let grpc_logger = logger.new(o!("component" => "grpc-server"));
         std::thread::Builder::new()
             .name("grpc-server".into())
@@ -258,7 +293,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
                 let rt = tokio::runtime::Runtime::new().expect("create tokio runtime for grpc");
                 rt.block_on(async move {
                     let server = RpcServer::new(rpc_config, rpc_context);
-                    if let Err(e) = server.serve().await {
+                    let shutdown_future = async move {
+                        grpc_shutdown_signal.notified().await;
+                    };
+                    if let Err(e) = server.serve_with_shutdown(shutdown_future).await {
                         slog::error!(grpc_logger, "gRPC server error"; "error" => %e);
                     }
                 });
@@ -297,6 +335,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             storage,
             shutdown,
             grpc_addr,
+            grpc_shutdown,
             logger,
         })
     }
@@ -416,9 +455,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
         self.shutdown.store(true, Ordering::Release);
 
         // Step 2: Stop gRPC server (no new user transactions)
-        // TODO: Implement gRPC server shutdown
-        // self.grpc_server.shutdown();
-        slog::debug!(self.logger, "gRPC server stopped (TODO)");
+        self.grpc_shutdown.notify_one();
+        slog::debug!(self.logger, "gRPC server shutdown signaled");
 
         // Step 3: Signal P2P to stop (no new network messages)
         self.p2p_handle.shutdown();

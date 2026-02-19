@@ -321,7 +321,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             while let Ok(message) = self.message_consumer.pop() {
                 did_work = true;
                 if let Err(e) = self.handle_consensus_message(message) {
-                    slog::error!(self.logger, "Error handling consensus message: {}", e);
+                    slog::warn!(self.logger, "Error handling consensus message: {}", e);
+                }
+                // Check shutdown between messages to allow timely exit
+                if self.shutdown_signal.load(Ordering::Relaxed) {
+                    break;
                 }
             }
 
@@ -331,7 +335,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 match self.handle_tick() {
                     Ok(_) => {}
                     Err(e) => {
-                        slog::error!(self.logger, "Error handling tick: {}", e);
+                        slog::warn!(self.logger, "Error handling tick: {}", e);
                     }
                 }
                 last_tick = Instant::now();
@@ -437,7 +441,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             ViewProgressEvent::ShouldFinalize { view, block_hash } => {
                 self.finalize_view(view, block_hash)
             }
-            ViewProgressEvent::ShouldNullify { view } => self.nullify_view(view),
+            ViewProgressEvent::ShouldNullify { view } => self.nullify_view(view, false),
             ViewProgressEvent::ShouldBroadcastNullification { view } => {
                 self.broadcast_nullification(view)
             }
@@ -531,7 +535,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 slog::info!(self.logger, "TODO: Request missing state here");
                 Ok(())
             }
-            ViewProgressEvent::ShouldNullifyView { view } => self.nullify_view(view),
+            ViewProgressEvent::ShouldNullifyView { view } => self.nullify_view(view, false),
             ViewProgressEvent::BroadcastConsensusMessage { message } => {
                 self.broadcast_consensus_message(*message)
             }
@@ -548,8 +552,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                     current_view
                 );
 
-                // 1. Broadcast the nullification for the view that triggered the cascade (if
-                //    needed)
+                // 1. Broadcast the aggregated nullification for the view that triggered the cascade
+                //    (if needed). This lets other nodes learn about the nullification and
+                //    independently handle their own cascades.
                 if should_broadcast_nullification
                     && let Err(e) = self.broadcast_nullification(start_view)
                 {
@@ -561,24 +566,37 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                     );
                 }
 
-                // 2. Nullify all views from start_view to current_view
-                for view in (start_view + 1)..=current_view {
-                    if let Err(e) = self.nullify_view(view) {
-                        slog::debug!(
-                            self.logger,
-                            "View {} already nullified or error during cascade: {}",
-                            view,
-                            e
-                        );
-                    }
+                // 2. Per paper Algorithm 1 Step 8: do NOT nullify intermediate views. Intermediate
+                //    views between start_view and current_view were already processed through
+                //    normal consensus flow (M-notarized or nullified). Marking them as nullified
+                //    would corrupt their state and cause SelectParent to return inconsistent
+                //    results across nodes, breaking chain integrity. Only the current view should
+                //    be nullified.
+
+                // 3. Send a single Nullify for the current view (per paper Algorithm 1, Step 8).
+                //    This broadcasts our vote AND marks it locally as nullified.
+                if let Err(e) = self.nullify_view(current_view, true) {
+                    slog::debug!(
+                        self.logger,
+                        "Failed to nullify current view {} during cascade: {}",
+                        current_view,
+                        e
+                    );
                 }
 
-                // 2. Progress to a new fresh view
-                let new_view = current_view + 1;
+                // 4. Remove stale pending state diffs from start_view onward. Intermediate
+                //    M-notarized views may have StateDiffs with nonce increments that are no longer
+                //    valid after the cascade. All correct nodes will eventually cascade from the
+                //    same start_view (2f+1 guarantee), so this converges to consistent pending
+                //    state.
+                self.view_manager
+                    .rollback_pending_diffs_in_range(start_view, current_view);
 
-                // 3. Find the most recent valid parent (skips all nullified views)
-                let parent_hash = self.view_manager.select_parent(new_view);
-                let leader = self.view_manager.leader_for_view(new_view)?;
+                // 5. Create a new view context and progress to it. Unlike normal nullification flow
+                //    (which requires aggregated proof), cascade progression only requires local
+                //    nullification of current view.
+                let new_view = current_view + 1;
+                let (leader, parent_hash) = self.view_manager.progress_after_cascade(new_view)?;
 
                 slog::info!(
                     self.logger,
@@ -587,7 +605,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                     parent_hash
                 );
 
-                // 4. Progress to the new view
+                // 6. Replay buffered messages and propose if leader
                 self.progress_to_next_view(new_view, leader, parent_hash)?;
 
                 Ok(())
@@ -602,21 +620,60 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                     current_view
                 );
 
-                // Send nullify messages for all views from start_view to current_view (INCLUSIVE)
-                // This marks them as has_nullified locally and broadcasts nullify votes,
-                // but does NOT progress to a new view - we must wait for a Nullification
-                // (aggregated proof with 2F+1 signatures) before we can safely progress.
-                for view in start_view..=current_view {
-                    if let Err(e) = self.nullify_view(view) {
-                        slog::debug!(
+                // Per paper: do NOT nullify intermediate views between start_view and
+                // current_view. They were already processed through normal consensus flow.
+                // Marking them as nullified would corrupt their M-notarization state and
+                // cause SelectParent inconsistencies across nodes.
+
+                // Broadcast nullify for current view only
+                if let Err(e) = self.nullify_view(current_view, true) {
+                    slog::debug!(
+                        self.logger,
+                        "Failed to nullify current view {}: {}",
+                        current_view,
+                        e
+                    );
+                }
+
+                // Remove stale pending state diffs from start_view onward
+                // (same rationale as ShouldCascadeNullification above).
+                self.view_manager
+                    .rollback_pending_diffs_in_range(start_view, current_view);
+
+                Ok(())
+            }
+            ViewProgressEvent::ShouldRequestBlock { view, block_hash } => {
+                slog::info!(
+                    self.logger,
+                    "Requesting missing block from peers";
+                    "view" => view,
+                );
+                self.broadcast_consensus_message(ConsensusMessage::BlockRecoveryRequest {
+                    view,
+                    block_hash,
+                })
+            }
+            ViewProgressEvent::ShouldRequestBlocks { requests } => {
+                slog::info!(
+                    self.logger,
+                    "Requesting {} missing blocks from peers",
+                    requests.len(),
+                );
+                for (view, block_hash) in requests {
+                    if let Err(e) =
+                        self.broadcast_consensus_message(ConsensusMessage::BlockRecoveryRequest {
+                            view,
+                            block_hash,
+                        })
+                    {
+                        slog::warn!(
                             self.logger,
-                            "View {} already nullified or error: {}",
+                            "Failed to request block for view {}: {}",
                             view,
                             e
                         );
                     }
                 }
-
                 Ok(())
             }
         }
@@ -806,6 +863,14 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             "Finalizing view {view} with block hash {block_hash:?}"
         );
 
+        // Defer finalization of the current view — removing it from non_finalized_views
+        // would break invariants (current() would panic on the next tick).
+        // The deferred finalization loop in progress_to_next_view will pick this up
+        // once we advance to the next view.
+        if view == self.view_manager.current_view_number() {
+            return Ok(());
+        }
+
         // Notify mempool to remove those transactions associated with the finalized block
         let finalized_txs = self.view_manager.get_block_tx_hashes(view)?;
         let notification = FinalizedNotification {
@@ -821,9 +886,15 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         Ok(())
     }
 
-    /// Nullify a view
-    fn nullify_view(&mut self, view: u64) -> Result<()> {
-        slog::debug!(self.logger, "Nullifying view {view}");
+    /// Nullify a view.
+    ///
+    /// # Arguments
+    /// * `view` - The view number to nullify
+    /// * `force` - If true, use cascade nullification (bypasses has_voted/evidence checks). Used
+    ///   for ShouldCascadeNullification and ShouldNullifyRange events. If false, use normal
+    ///   nullification logic (timeout or Byzantine based on evidence).
+    fn nullify_view(&mut self, view: u64, force: bool) -> Result<()> {
+        slog::debug!(self.logger, "Nullifying view {view} (force: {force})");
 
         // Get view context to create nullify message
         let view_ctx = self.view_manager.view_context_mut(view)?;
@@ -836,13 +907,14 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             return Ok(());
         }
 
-        let nullify = if view_ctx.has_voted {
-            // NOTE: After voting, the current replica must have conflicting evidence,
-            // so in this case, the view is under Byzantine behavior.
-            view_ctx.create_nullify_for_byzantine(&self.secret_key)?
-        } else {
-            // NOTE: If the current replica attempts to nullify a message before voting, it could be
-            // timeout OR Byzantine. We distinguish based on the type of evidence:
+        let nullify = if force {
+            // Cascade nullification: bypass has_voted check.
+            // This is safe because cascade is for pending state consistency —
+            // Lemma 5.3 guarantees that a nullified parent can never be L-notarized,
+            // so descendant views' pending state must be cleaned up.
+            view_ctx.create_nullify_for_cascade(&self.secret_key)?
+        } else if view_ctx.has_voted {
+            // After voting, we need conflicting evidence to nullify (Byzantine).
             let num_conflicting_votes = view_ctx.num_invalid_votes;
             let num_nullify_messages = view_ctx.nullify_messages.len();
             let combined_count = num_conflicting_votes + num_nullify_messages;
@@ -851,6 +923,18 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 // Byzantine behavior detected:
                 // - Conflicting votes > F means equivocation (can't finalize)
                 // - Combined evidence > 2F indicates Byzantine quorum
+                view_ctx.create_nullify_for_byzantine(&self.secret_key)?
+            } else {
+                // Voted but no sufficient evidence — cannot nullify
+                return Ok(());
+            }
+        } else {
+            // Before voting: could be timeout OR Byzantine
+            let num_conflicting_votes = view_ctx.num_invalid_votes;
+            let num_nullify_messages = view_ctx.nullify_messages.len();
+            let combined_count = num_conflicting_votes + num_nullify_messages;
+
+            if num_conflicting_votes > F || combined_count > 2 * F {
                 view_ctx.create_nullify_for_byzantine(&self.secret_key)?
             } else {
                 // Timeout (no strong evidence of Byzantine behavior)
@@ -890,6 +974,49 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             "Progressing to next view {view} with leader {leader} and notarized block hash {notarized_block_hash:?}"
         );
 
+        // Try to finalize any pending views that now have enough votes.
+        // This handles the case where votes accumulated during previous views
+        // but finalization was deferred (e.g., missing block, missing parent M-notarization).
+        //
+        // Limit per pass to avoid blocking the main event loop for too long — each
+        // finalization involves storage writes and can take ~30ms. Processing hundreds
+        // of views here would starve message processing (block recovery requests/responses),
+        // causing other nodes to wait. Remaining views are finalized on the next call.
+        const MAX_FINALIZATIONS_PER_PASS: usize = 5;
+        let mut finalization_count = 0;
+        while let Some((finalizable_view, block_hash)) = self.view_manager.oldest_finalizable_view()
+        {
+            if finalization_count >= MAX_FINALIZATIONS_PER_PASS {
+                break;
+            }
+            slog::info!(
+                self.logger,
+                "Attempting deferred finalization for view {} (block: {:?})",
+                finalizable_view,
+                block_hash
+            );
+            if let Err(e) = self.finalize_view(finalizable_view, block_hash) {
+                slog::warn!(
+                    self.logger,
+                    "Deferred finalization failed for view {}: {}",
+                    finalizable_view,
+                    e
+                );
+                break;
+            }
+            // If the view is still present after finalize_view returned Ok(()),
+            // it means finalization was deferred (e.g., ancestor missing block).
+            // Break to avoid an infinite loop — we'll retry on the next view progression.
+            if self
+                .view_manager
+                .find_view_context(finalizable_view)
+                .is_some()
+            {
+                break;
+            }
+            finalization_count += 1;
+        }
+
         // Replay any buffered messages for this view (or previous ones)
         let pending_views: Vec<u64> = self
             .pending_messages
@@ -900,7 +1027,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
 
         for pending_view in pending_views {
             if let Some(messages) = self.pending_messages.remove(&pending_view) {
-                slog::debug!(
+                slog::warn!(
                     self.logger,
                     "Replaying {} buffered messages for view {}",
                     messages.len(),
@@ -908,7 +1035,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 );
                 for msg in messages {
                     if let Err(e) = self.handle_consensus_message(msg) {
-                        slog::error!(self.logger, "Failed to process buffered message: {}", e);
+                        slog::warn!(self.logger, "Failed to process buffered message: {}", e);
                     }
                 }
             }

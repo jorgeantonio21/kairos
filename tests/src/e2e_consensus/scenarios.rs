@@ -476,8 +476,8 @@ fn test_multi_node_happy_path() {
             validators,
             total_number_peers: N,
             maximum_number_faulty_peers: F,
-            bootstrap_timeout_ms: 20_000, // 20 seconds for tests - more time for peers to connect
-            ping_interval_ms: 200,        // Faster ping for quicker discovery
+            bootstrap_timeout_ms: 20_000,
+            ping_interval_ms: 200, // Faster ping for quicker discovery
             ..Default::default()
         };
 

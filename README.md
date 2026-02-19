@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="assets/kairos-logo.svg" alt="Kairos Logo" width="400" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/kairos-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/kairos-logo-light.svg">
+    <img src="assets/kairos-logo-light.svg" alt="Kairos Logo" width="400" />
+  </picture>
 </p>
 
 # Kairos

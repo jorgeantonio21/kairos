@@ -1,0 +1,74 @@
+<svg width="400" height="120" viewBox="0 0 400 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="gGoldL" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#8B6914"/>
+      <stop offset="100%" stop-color="#5C4410"/>
+    </radialGradient>
+    <radialGradient id="gCenterL" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#9A7430"/>
+      <stop offset="100%" stop-color="#7A5A20"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Outer dashed ring -->
+  <circle cx="60" cy="60" r="54" stroke="#7A5A20" stroke-width="0.6" stroke-dasharray="2 5" opacity="0.35"/>
+
+  <!-- Solid outer ring -->
+  <circle cx="60" cy="60" r="50" stroke="#7A5A20" stroke-width="1" opacity="0.45"/>
+
+  <!-- Dots between rings -->
+  <g>
+    <circle cx="99"   cy="60"   r="2"   fill="#7A5A20" opacity="0.95"/>
+    <circle cx="93.6" cy="79.5" r="1.5" fill="#7A5A20" opacity="0.65"/>
+    <circle cx="79.5" cy="93.6" r="1.1" fill="#7A5A20" opacity="0.4"/>
+    <circle cx="60"   cy="99"   r="2"   fill="#7A5A20" opacity="0.95"/>
+    <circle cx="40.5" cy="93.6" r="1.1" fill="#7A5A20" opacity="0.4"/>
+    <circle cx="26.4" cy="79.5" r="1.5" fill="#7A5A20" opacity="0.65"/>
+    <circle cx="21"   cy="60"   r="2"   fill="#7A5A20" opacity="0.95"/>
+    <circle cx="26.4" cy="40.5" r="1.5" fill="#7A5A20" opacity="0.65"/>
+    <circle cx="40.5" cy="26.4" r="1.1" fill="#7A5A20" opacity="0.4"/>
+    <circle cx="60"   cy="21"   r="2"   fill="#7A5A20" opacity="0.95"/>
+    <circle cx="79.5" cy="26.4" r="1.1" fill="#7A5A20" opacity="0.4"/>
+    <circle cx="93.6" cy="40.5" r="1.5" fill="#7A5A20" opacity="0.65"/>
+  </g>
+
+  <!-- Inner subtle ring dots -->
+  <g>
+    <circle cx="88"   cy="60"   r="1.2" fill="#9A7430" opacity="0.4"/>
+    <circle cx="74"   cy="84.5" r="0.9" fill="#9A7430" opacity="0.25"/>
+    <circle cx="46"   cy="84.5" r="0.9" fill="#9A7430" opacity="0.25"/>
+    <circle cx="32"   cy="60"   r="1.2" fill="#9A7430" opacity="0.4"/>
+    <circle cx="46"   cy="35.5" r="0.9" fill="#9A7430" opacity="0.25"/>
+    <circle cx="74"   cy="35.5" r="0.9" fill="#9A7430" opacity="0.25"/>
+  </g>
+
+  <!-- Inner ring -->
+  <circle cx="60" cy="60" r="28" stroke="url(#gGoldL)" stroke-width="1.5" opacity="0.9"/>
+
+  <!-- Cardinal ticks -->
+  <line x1="60" y1="8"   x2="60" y2="16"  stroke="#7A5A20" stroke-width="1" opacity="0.5"/>
+  <line x1="60" y1="104" x2="60" y2="112" stroke="#7A5A20" stroke-width="1" opacity="0.5"/>
+  <line x1="8"  y1="60"  x2="16" y2="60"  stroke="#7A5A20" stroke-width="1" opacity="0.5"/>
+  <line x1="104" y1="60" x2="112" y2="60" stroke="#7A5A20" stroke-width="1" opacity="0.5"/>
+
+  <!-- K letterform -->
+  <line x1="51" y1="43" x2="51" y2="77" stroke="url(#gGoldL)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="51" y1="60" x2="68" y2="43" stroke="url(#gGoldL)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="51" y1="60" x2="68" y2="77" stroke="url(#gGoldL)" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="68" cy="43" r="2" fill="#9A7430"/>
+  <circle cx="68" cy="77" r="2" fill="#9A7430"/>
+
+  <!-- Center dot -->
+  <circle cx="60" cy="60" r="3.5" fill="url(#gCenterL)"/>
+  <circle cx="60" cy="60" r="1.5" fill="#5C4410"/>
+
+  <!-- Wordmark -->
+  <text
+    x="140" y="68"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="38"
+    font-weight="400"
+    letter-spacing="10"
+    fill="#5C4410"
+  >KAIROS</text>
+</svg>

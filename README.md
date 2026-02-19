@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/kairos-logo.svg" alt="Kairos Logo" width="400" />
+</p>
+
 # Kairos
 
 A minimalist, low-latency blockchain protocol. EVM-compatible. USDC-native settlement.

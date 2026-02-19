@@ -1,8 +1,8 @@
 #!/bin/bash
-# Hellas Local Network Runner
+# Kairos Local Network Runner
 set -e
 
-LOG_DIR="${TMPDIR:-/tmp}/hellas-local"
+LOG_DIR="${TMPDIR:-/tmp}/kairos-local"
 mkdir -p "$LOG_DIR"
 
 echo "Building..."

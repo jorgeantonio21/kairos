@@ -6,10 +6,10 @@
 //! ./node/config/run-local-network.sh
 //!
 //! # Then in another terminal:
-//! cargo run -p hellas-sdk --example transfer
+//! cargo run -p kairos-sdk --example transfer
 //! ```
 
-use hellas_sdk::{Address, HellasClient, TxBuilder, Wallet};
+use kairos_sdk::{Address, KairosClient, TxBuilder, Wallet};
 use std::time::Duration;
 
 /// Generate the first genesis wallet using the same seed as node config generation
@@ -21,11 +21,11 @@ fn genesis_wallet() -> Wallet {
 }
 
 #[tokio::main]
-async fn main() -> hellas_sdk::Result<()> {
-    println!("=== Hellas SDK Transfer Example ===\n");
+async fn main() -> kairos_sdk::Result<()> {
+    println!("=== Kairos SDK Transfer Example ===\n");
 
     // Connect to local network (node0)
-    let client = HellasClient::connect("http://localhost:50051").await?;
+    let client = KairosClient::connect("http://localhost:50051").await?;
     println!("✓ Connected to node");
 
     // Load the genesis wallet (has 1,000,000,000 initial balance)

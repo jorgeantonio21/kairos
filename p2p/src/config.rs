@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
 /// Unique namespace to avoid message replay attacks across applications.
-pub const APPLICATION_NAMESPACE: &[u8] = b"_HELLAS_VALIDATOR_P2P";
+pub const APPLICATION_NAMESPACE: &[u8] = b"_KAIROS_VALIDATOR_P2P";
 
 /// P2P layer configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ fn default_max_message_size() -> u32 {
 }
 
 fn default_cluster_id() -> String {
-    "hellas".to_string()
+    "kairos".to_string()
 }
 
 fn default_message_backlog() -> usize {
@@ -132,7 +132,7 @@ impl Default for P2PConfig {
 impl P2PConfig {
     /// Load configuration from a TOML file using figment.
     ///
-    /// Falls back to environment variables with `HELLAS_VALIDATOR_P2P_` prefix.
+    /// Falls back to environment variables with `KAIROS_VALIDATOR_P2P_` prefix.
     /// E.g., `P2P_LISTEN_ADDR=0.0.0.0:9001`
     ///
     /// # Example
@@ -143,7 +143,7 @@ impl P2PConfig {
         use figment::providers::{Env, Format, Toml};
         Figment::new()
             .merge(Toml::file(path))
-            .merge(Env::prefixed("HELLAS_VALIDATOR_P2P_"))
+            .merge(Env::prefixed("KAIROS_VALIDATOR_P2P_"))
             .extract()
             .map_err(Box::new)
     }

@@ -1,17 +1,17 @@
-//! Hellas SDK - Rust client for the Hellas blockchain
+//! Kairos SDK - Rust client for the Kairos blockchain
 //!
-//! This SDK provides a high-level API for interacting with the Hellas network.
+//! This SDK provides a high-level API for interacting with the Kairos network.
 //!
 //! # Quick Start
 //!
 //! ```ignore
-//! use hellas_sdk::{HellasClient, Wallet, TxBuilder};
+//! use kairos_sdk::{KairosClient, Wallet, TxBuilder};
 //! use std::time::Duration;
 //!
 //! #[tokio::main]
-//! async fn main() -> hellas_sdk::Result<()> {
+//! async fn main() -> kairos_sdk::Result<()> {
 //!     // Connect to a node
-//!     let client = HellasClient::connect("http://localhost:50051").await?;
+//!     let client = KairosClient::connect("http://localhost:50051").await?;
 //!
 //!     // Create or load a wallet
 //!     let wallet = Wallet::generate();
@@ -46,7 +46,7 @@ pub mod wallet;
 // Re-exports for convenience
 pub use account::{Account, AccountClient};
 pub use block::{Block, BlockClient};
-pub use client::{ClientConfig, HellasClient};
+pub use client::{ClientConfig, KairosClient};
 pub use error::{Error, Result};
 pub use subscription::SubscriptionClient;
 pub use transaction::{SignedTransaction, TxBuilder, TxInfo, TxReceipt, TxStatus, TxType};

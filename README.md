@@ -1,20 +1,28 @@
-# Hellas Core
+# Kairos
 
-Core protocol implementation for the Hellas network: decentralized infrastructure for generative AI applications.
+A minimalist, low-latency blockchain protocol. EVM-compatible. USDC-native settlement.
 
 ## Overview
 
-Hellas is a decentralized protocol designed to power generative AI applications at scale. The network enables node operators to bring AI models online and monetize inference capacity, while application developers gain access to a permissionless marketplace of AI compute resources.
+Kairos is a high-performance Layer 1 blockchain built for speed. Powered by the **Minimmit** consensus protocol, Kairos achieves 2-round finality with approximately 17% lower latency than state-of-the-art BFT protocols — making it ideal for real-time payments, DeFi, and any application where every millisecond matters.
 
-### Why Hellas
+### Key Properties
 
-Traditional blockchain architectures introduce significant latency overhead that is incompatible with interactive AI workloads. A user querying a language model expects sub-second responses, not the multi-second finality times typical of general-purpose chains. Hellas addresses this through two key innovations:
+- ⚡ **Fastest finality** — Minimmit consensus achieves 2-round commit with optimistic responsiveness
+- 🔗 **EVM-compatible** — Full Ethereum Virtual Machine compatibility for seamless smart contract deployment
+- 💵 **USDC-native** — First-class USDC support as the native settlement asset
+- 🔒 **Byzantine fault tolerant** — Secure under `n ≥ 5f + 1` with cryptographic finality guarantees
+- 🧱 **Minimalist design** — Lean codebase, no bloat, purpose-built for low-latency consensus
 
-1. **Minimmit Consensus**: A Byzantine-fault-tolerant State Machine Replication (SMR) protocol that achieves approximately 17% lower latency than state-of-the-art protocols like Alpenglow and Simplex in globally distributed networks. The key insight is decoupling view progression from transaction finality: while requiring `n-f` votes for finalization (L-notarizations), the protocol allows view progression with only `2f+1` votes (M-notarizations). This minimizes overhead on the consensus hot path.
+### Why Kairos
 
-2. **Specialized State Channels**: For high-frequency AI inference requests, Hellas employs state channels that allow participants to transact off-chain with on-chain settlement guarantees. This enables nodes to serve thousands of inference requests per second without requiring each request to pass through consensus.
+Existing blockchains trade latency for generality. Multi-second finality times are unacceptable for real-time payments, high-frequency trading, and interactive financial applications. Kairos is designed from the ground up to minimize time-to-finality through two key innovations:
 
-Together, these innovations enable a network where AI model providers can offer low-latency inference services with cryptographic guarantees of payment and execution integrity.
+1. **Minimmit Consensus**: A Byzantine-fault-tolerant State Machine Replication (SMR) protocol that decouples view progression from transaction finality. While requiring `n-f` votes for finalization (L-notarizations), the protocol allows view progression with only `2f+1` votes (M-notarizations). This minimizes overhead on the consensus hot path, achieving ~17% lower latency than Alpenglow and Simplex in globally distributed networks.
+
+2. **State Channels**: For high-frequency payment flows and DeFi interactions, Kairos supports state channels that allow participants to transact off-chain with on-chain settlement guarantees. This enables thousands of USDC transfers per second without requiring each transaction to pass through consensus.
+
+Together, these innovations deliver a blockchain where sub-second finality is the norm — not the exception.
 
 **Research Paper**: [Minimmit: Minimizing Latency of Optimistic BFT SMR](https://arxiv.org/pdf/2508.10862)
 
@@ -226,7 +234,7 @@ core/
 
 ```bash
 # Clone the repository
-git clone https://github.com/hellas-network/core.git
+git clone https://github.com/jorgeantonio21/kairos.git
 cd core
 
 # Build all crates
@@ -292,7 +300,7 @@ peers = []                               # BLS public keys of all validators
 genesis_accounts = []
 
 [storage]
-path = "/var/lib/hellas/data"
+path = "/var/lib/kairos/data"
 
 [p2p]
 listen_addr = "0.0.0.0:9000"
@@ -309,8 +317,8 @@ total_validators = 6
 f = 1
 
 [identity]
-bls_secret_key_path = "/etc/hellas/keys/bls.key"
-ed25519_secret_key_path = "/etc/hellas/keys/ed25519.key"
+bls_secret_key_path = "/etc/kairos/keys/bls.key"
+ed25519_secret_key_path = "/etc/kairos/keys/ed25519.key"
 ```
 
 ### Environment Variables
@@ -321,7 +329,7 @@ Configuration can be overridden via environment variables with the `NODE_` prefi
 NODE_CONSENSUS__N=6
 NODE_CONSENSUS__F=1
 NODE_CONSENSUS__VIEW_TIMEOUT__SECS=10
-NODE_STORAGE__PATH=/data/hellas
+NODE_STORAGE__PATH=/data/kairos
 NODE_P2P__LISTEN_ADDR=0.0.0.0:9000
 NODE_RPC__LISTEN_ADDR=0.0.0.0:8080
 ```

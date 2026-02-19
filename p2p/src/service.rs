@@ -133,7 +133,7 @@ where
     let peer_id = identity.peer_id();
 
     let thread_handle = std::thread::Builder::new()
-        .name("hellas-validator-p2p-thread".to_string())
+        .name("kairos-validator-p2p-thread".to_string())
         .spawn(move || {
             // Run the context
             runner.start(move |ctx| async move {

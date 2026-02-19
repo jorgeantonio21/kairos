@@ -6,7 +6,7 @@ RPC nodes are non-validator nodes that synchronize finalized blockchain state an
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                             Hellas Network                                  │
+│                             Kairos Network                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │    ┌─────────────┐       ┌─────────────┐       ┌─────────────┐              │
@@ -150,7 +150,7 @@ listen_addr = "0.0.0.0:50051"
 max_concurrent_streams = 1000
 
 [storage]
-path = "/var/lib/hellas/rpc-node.redb"
+path = "/var/lib/kairos/rpc-node.redb"
 ```
 
 ### Validator Config Addition
@@ -393,7 +393,7 @@ New gRPC service for light client verification:
 
 ```protobuf
 syntax = "proto3";
-package hellas.consensus;
+package kairos.consensus;
 
 service ConsensusService {
     // Get L-notarization certificate for a block
@@ -480,11 +480,11 @@ For bridges and smart contracts, the verification can happen on-chain:
 
 ```solidity
 // Pseudo-Solidity for bridge contract
-contract HellasLightClient {
+contract KairosLightClient {
     // Cached validator set (updated on epoch change)
     mapping(uint64 => bytes) public aggregatedPubKeys;  // epoch => pubkey
     
-    /// Verify a block was finalized by Hellas validators
+    /// Verify a block was finalized by Kairos validators
     function verifyBlock(
         bytes32 blockHash,
         bytes calldata blsSignature,

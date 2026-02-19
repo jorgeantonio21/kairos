@@ -10,7 +10,7 @@ use consensus::state::transaction::Transaction;
 ///
 /// # Example
 /// ```ignore
-/// use hellas_sdk::{TxBuilder, Wallet, Address};
+/// use kairos_sdk::{TxBuilder, Wallet, Address};
 ///
 /// let wallet = Wallet::generate();
 /// let recipient = Address::from_hex("...")?;

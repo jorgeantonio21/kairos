@@ -1,7 +1,7 @@
 //! Node crate - High-level validator node orchestration.
 //!
 //! This crate provides the `ValidatorNode` struct that manages all the services
-//! required to run a validator in the Hellas consensus network:
+//! required to run a validator in the Kairos consensus network:
 //!
 //! - **Storage**: Persistent block and state storage
 //! - **Mempool**: Transaction pool management
@@ -44,7 +44,7 @@
 //!     .with_p2p_config(p2p_config)
 //!     .with_rpc_config(rpc_config)
 //!     .with_identity(identity)
-//!     .with_storage_path("/var/lib/hellas/data")
+//!     .with_storage_path("/var/lib/kairos/data")
 //!     .with_logger(logger)
 //!     .build()?;
 //! ```

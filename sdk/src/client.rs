@@ -1,4 +1,4 @@
-//! Hellas network client
+//! Kairos network client
 
 use crate::account::AccountClient;
 use crate::block::BlockClient;
@@ -11,7 +11,7 @@ use grpc_client::proto::{GetTransactionRequest, SubmitTransactionRequest};
 use std::time::Duration;
 use tonic::transport::Channel;
 
-/// Configuration for connecting to a Hellas node.
+/// Configuration for connecting to a Kairos node.
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
     /// Node endpoint (e.g., "http://localhost:50051").
@@ -48,22 +48,22 @@ impl ClientConfig {
     }
 }
 
-/// Client for interacting with a Hellas node.
+/// Client for interacting with a Kairos node.
 ///
 /// # Example
 /// ```ignore
-/// use hellas_sdk::HellasClient;
+/// use kairos_sdk::KairosClient;
 ///
-/// let client = HellasClient::connect("http://localhost:50051").await?;
+/// let client = KairosClient::connect("http://localhost:50051").await?;
 /// let balance = client.account().get_balance(&address).await?;
 /// ```
-pub struct HellasClient {
+pub struct KairosClient {
     channel: Channel,
     #[allow(dead_code)]
     config: ClientConfig,
 }
 
-impl HellasClient {
+impl KairosClient {
     /// Connect to a node with default config.
     ///
     /// # Arguments

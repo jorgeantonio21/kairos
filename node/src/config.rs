@@ -43,7 +43,7 @@ pub struct IdentityConfig {
 /// peers = ["peer1_pubkey", "peer2_pubkey", ...]
 ///
 /// [storage]
-/// path = "/var/lib/hellas/data"
+/// path = "/var/lib/kairos/data"
 ///
 /// [p2p]
 /// listen_addr = "0.0.0.0:9000"
@@ -53,8 +53,8 @@ pub struct IdentityConfig {
 /// listen_addr = "0.0.0.0:50051"
 ///
 /// [identity]
-/// bls_secret_key_path = "/etc/hellas/bls.key"
-/// ed25519_secret_key_path = "/etc/hellas/ed25519.key"
+/// bls_secret_key_path = "/etc/kairos/bls.key"
+/// ed25519_secret_key_path = "/etc/kairos/ed25519.key"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {

@@ -1,4 +1,4 @@
-# Hellas Local Network - Node 4
+# Kairos Local Network - Node 4
 # Generated with seed 42. Do not edit peer keys manually.
 
 [consensus]
@@ -29,7 +29,7 @@ path = "./data/node4.redb"
 
 [p2p]
 bootstrap_timeout_ms        = 30000
-cluster_id                  = "hellas-local"
+cluster_id                  = "kairos-local"
 external_addr               = "127.0.0.1:9400"
 listen_addr                 = "127.0.0.1:9400"
 maximum_number_faulty_peers = 1

@@ -1,8 +1,8 @@
 # =============================================================================
-# Hellas Validator Node Configuration
+# Kairos Validator Node Configuration
 # =============================================================================
 #
-# This file contains all configuration options for running a Hellas validator.
+# This file contains all configuration options for running a Kairos validator.
 # Copy this file to `config.toml` and modify values as needed.
 #
 # Environment variables can override any value using the NODE_ prefix.
@@ -68,7 +68,7 @@ public_key = "0xeeff0011..."
 # Path to the data directory for RocksDB storage.
 # This directory will be created if it doesn't exist.
 # Should have sufficient disk space for blockchain data.
-path = "/var/lib/hellas/data"
+path = "/var/lib/kairos/data"
 
 # -----------------------------------------------------------------------------
 # P2P CONFIGURATION
@@ -94,7 +94,7 @@ maximum_number_faulty_peers = 1
 
 # Cluster ID for network namespace (prevents cross-network message replay).
 # All validators in the same network must use the same cluster_id.
-cluster_id = "hellas-mainnet"
+cluster_id = "kairos-mainnet"
 
 # Maximum size of a single P2P message in bytes.
 # Default: 1MB (1048576 bytes)
@@ -203,13 +203,13 @@ f = 1
 # This key is used for consensus voting and block signing.
 # If not provided or file doesn't exist, a new key will be generated.
 # SECURITY: This file must be kept secure and backed up.
-bls_secret_key_path = "/etc/hellas/keys/bls.key"
+bls_secret_key_path = "/etc/kairos/keys/bls.key"
 
 # Path to the Ed25519 secret key file for P2P identity.
 # This key is used for authenticating P2P connections.
 # If not provided or file doesn't exist, a new key will be generated.
 # SECURITY: This file must be kept secure and backed up.
-ed25519_secret_key_path = "/etc/hellas/keys/ed25519.key"
+ed25519_secret_key_path = "/etc/kairos/keys/ed25519.key"
 
 # =============================================================================
 # RPC NODE CONFIGURATION (for read-only syncing nodes)
@@ -236,7 +236,7 @@ p2p_addr = "0.0.0.0:9000"
 data_dir = "./rpc-data"
 
 # Cluster ID (must match validator network)
-cluster_id = "hellas-mainnet"
+cluster_id = "kairos-mainnet"
 
 # Path to identity file (persists Ed25519 key across restarts)
 # If not set, generates new identity each run

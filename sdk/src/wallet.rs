@@ -20,7 +20,7 @@ impl Wallet {
     ///
     /// # Example
     /// ```
-    /// use hellas_sdk::Wallet;
+    /// use kairos_sdk::Wallet;
     ///
     /// let wallet = Wallet::generate();
     /// println!("New wallet address: {}", wallet.address());

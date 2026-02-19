@@ -9,10 +9,10 @@ use slog::{Drain, Logger};
 
 use rpc::{RpcConfig, RpcIdentity, RpcNode};
 
-/// Hellas RPC Node - syncs finalized blocks and serves read-only queries.
+/// Kairos RPC Node - syncs finalized blocks and serves read-only queries.
 #[derive(Parser, Debug)]
 #[command(name = "rpc-node")]
-#[command(about = "Hellas RPC Node for block sync and queries")]
+#[command(about = "Kairos RPC Node for block sync and queries")]
 struct Args {
     /// Path to configuration file (TOML).
     #[arg(short, long, default_value = "rpc-config.toml")]
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let logger = create_logger();
 
-    slog::info!(logger, "Starting Hellas RPC Node";
+    slog::info!(logger, "Starting Kairos RPC Node";
         "config" => %args.config.display()
     );
 

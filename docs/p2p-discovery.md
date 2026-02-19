@@ -178,15 +178,15 @@ The `rpc/src/main.rs` binary should be merged into the `node` crate as a subcomm
 
 **Current structure:**
 ```
-node/src/main.rs       → `hellas-node run --config ...`
+node/src/main.rs       → `kairos-node run --config ...`
 rpc/src/main.rs        → `rpc-node --config ...` (separate binary)
 ```
 
 **Target structure:**
 ```
-node/src/main.rs       → `hellas-node run --config ...`        (validator)
-                       → `hellas-node rpc --config ...`         (RPC node)
-                       → `hellas-node generate-configs ...`     (config gen)
+node/src/main.rs       → `kairos-node run --config ...`        (validator)
+                       → `kairos-node rpc --config ...`         (RPC node)
+                       → `kairos-node generate-configs ...`     (config gen)
 ```
 
 **Implementation steps:**

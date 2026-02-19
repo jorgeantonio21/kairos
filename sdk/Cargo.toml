@@ -1,8 +1,8 @@
 [package]
-description = "Rust SDK for Hellas blockchain"
+description = "Rust SDK for Kairos blockchain"
 edition     = "2024"
 license     = "Apache-2.0"
-name        = "hellas-sdk"
+name        = "kairos-sdk"
 version     = "0.1.0"
 
 [dependencies]

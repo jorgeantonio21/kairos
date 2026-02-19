@@ -49,7 +49,7 @@ fn default_data_dir() -> PathBuf {
 }
 
 fn default_cluster_id() -> String {
-    "hellas-mainnet".to_string()
+    "kairos-mainnet".to_string()
 }
 
 impl Default for RpcConfig {
@@ -89,7 +89,7 @@ mod tests {
         assert!(config.validators.is_empty());
         assert_eq!(config.grpc_addr.port(), 50051);
         assert_eq!(config.p2p_addr.port(), 9000);
-        assert_eq!(config.cluster_id, "hellas-mainnet");
+        assert_eq!(config.cluster_id, "kairos-mainnet");
         assert_eq!(config.data_dir, PathBuf::from("./rpc-data"));
     }
 
@@ -99,7 +99,7 @@ mod tests {
 # RPC Node Configuration
 
 # Cluster identifier (must match validators)
-cluster_id = "hellas-testnet"
+cluster_id = "kairos-testnet"
 
 # gRPC server bind address
 grpc_addr = "0.0.0.0:50052"
@@ -132,7 +132,7 @@ bls_peer_id = "3456789012345678901"
 
         let config = RpcConfig::load(file.path().to_str().unwrap()).unwrap();
 
-        assert_eq!(config.cluster_id, "hellas-testnet");
+        assert_eq!(config.cluster_id, "kairos-testnet");
         assert_eq!(config.grpc_addr.port(), 50052);
         assert_eq!(config.p2p_addr.port(), 9001);
         assert_eq!(config.data_dir, PathBuf::from("/var/lib/rpc-node/data"));
@@ -170,7 +170,7 @@ bls_peer_id = "999888777666555444"
         // Defaults should be applied
         assert_eq!(config.grpc_addr.port(), 50051); // default
         assert_eq!(config.p2p_addr.port(), 9000); // default
-        assert_eq!(config.cluster_id, "hellas-mainnet"); // default
+        assert_eq!(config.cluster_id, "kairos-mainnet"); // default
     }
 
     #[test]

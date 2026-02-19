@@ -1,10 +1,10 @@
 # Minimmit Protocol Implementation Overview
 
-## Hellas Blockchain Core Implementation
+## Kairos Blockchain Core Implementation
 
 ### Executive Summary
 
-This document outlines the technical implementation of the Hellas blockchain, powered by the Minimmit consensus protocol. Minimmit is a Byzantine-fault-tolerant State Machine Replication protocol that achieves significantly lower latency than existing approaches through an innovative view-change mechanism. The protocol assumes that on a total of `n` processors, or replicas, at most `f` of them may be Byzantine, where `n >= 5f + 1`.
+This document outlines the technical implementation of the Kairos blockchain, powered by the Minimmit consensus protocol. Minimmit is a Byzantine-fault-tolerant State Machine Replication protocol that achieves significantly lower latency than existing approaches through an innovative view-change mechanism. The protocol assumes that on a total of `n` processors, or replicas, at most `f` of them may be Byzantine, where `n >= 5f + 1`.
 The key insight is decoupling view progression from transaction finality: while requiring `n-f` votes for transaction finalization (L-notarizations), the protocol allows view progression with only `2f + 1` votes (M-notarizations). This design leads to approximately 17% reduction in transaction latency compared to state-of-the-art protocols like Alpenglow and Simplex in globally distributed networks. The original research is available at https://arxiv.org/pdf/2508.10862.
 
 ---

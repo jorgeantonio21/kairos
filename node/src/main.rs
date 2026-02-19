@@ -1,6 +1,6 @@
-//! Hellas Validator Node Binary
+//! Kairos Validator Node Binary
 //!
-//! This binary runs a validator node for the Hellas consensus network.
+//! This binary runs a validator node for the Kairos consensus network.
 //!
 //! # Usage
 //!
@@ -45,8 +45,8 @@ const PORT_GAP: u16 = 100;
 const LOCAL_NETWORK_SEED: u64 = 42;
 
 #[derive(Parser, Debug)]
-#[command(name = "hellas-node")]
-#[command(about = "Hellas validator node for the Minimmit consensus protocol")]
+#[command(name = "kairos-node")]
+#[command(about = "Kairos validator node for the Minimmit consensus protocol")]
 #[command(version)]
 struct Args {
     #[command(subcommand)]
@@ -278,7 +278,7 @@ fn build_config(node_idx: usize, peers: &[PeerInfo], genesis_accounts: &[(String
         .join("\n\n");
 
     format!(
-        r#"# Hellas Local Network - Node {node_idx}
+        r#"# Kairos Local Network - Node {node_idx}
 # Generated with seed {seed}. Do not edit peer keys manually.
 
 [consensus]
@@ -303,7 +303,7 @@ total_number_peers = {n}
 maximum_number_faulty_peers = {f}
 bootstrap_timeout_ms = 30000
 ping_interval_ms = 200
-cluster_id = "hellas-local"
+cluster_id = "kairos-local"
 
 {p2p_validators}
 [rpc]
@@ -331,10 +331,10 @@ f = {f}
 fn build_run_script(config_dir: &std::path::Path) -> String {
     format!(
         r#"#!/bin/bash
-# Hellas Local Network Runner
+# Kairos Local Network Runner
 set -e
 
-LOG_DIR="${{TMPDIR:-/tmp}}/hellas-local"
+LOG_DIR="${{TMPDIR:-/tmp}}/kairos-local"
 mkdir -p "$LOG_DIR"
 
 echo "Building..."

@@ -1,4 +1,4 @@
-//! RPC Node crate for Hellas blockchain.
+//! RPC Node crate for Kairos blockchain.
 //!
 //! Provides a lightweight RPC node that:
 //! - Connects to validators via P2P

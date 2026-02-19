@@ -127,7 +127,7 @@ where
     let signer = identity.clone_ed25519_private_key();
 
     let thread_handle = std::thread::Builder::new()
-        .name("hellas-rpc-p2p-thread".to_string())
+        .name("kairos-rpc-p2p-thread".to_string())
         .spawn(move || {
             runner.start(move |ctx| async move {
                 run_rpc_p2p_service::<E::Context, N, F, M_SIZE>(

@@ -1663,26 +1663,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hellas-sdk"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "consensus",
- "ed25519-dalek",
- "futures",
- "grpc-client",
- "hex",
- "rand 0.8.5",
- "rkyv",
- "tempfile",
- "thiserror 2.0.17",
- "tokio",
- "tokio-stream",
- "tonic",
-]
-
-[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2039,6 +2019,26 @@ checksum = "464a3709c7f55f1f721e5389aa6ea4e3bc6aba669353300af094b29ffbdde1d8"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kairos-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "consensus",
+ "ed25519-dalek",
+ "futures",
+ "grpc-client",
+ "hex",
+ "rand 0.8.5",
+ "rkyv",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

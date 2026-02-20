@@ -244,9 +244,12 @@ fn process_incoming_tx(
     let sender = tx.sender;
     let tx_nonce = tx.nonce;
 
+    metrics::counter!("consensus.transactions_received_total").increment(1);
+
     // Verify signature before adding to pool
     if !tx.verify() {
         *stats_invalid_signatures += 1;
+        metrics::counter!("consensus.transactions_invalid_signature_total").increment(1);
         slog::debug!(
             logger,
             "Transaction rejected: invalid signature";
@@ -469,6 +472,10 @@ pub fn mempool_loop(
 
             // Publish to gRPC layer (lock-free write)
             stats_writer.store(Arc::new(pool_stats.clone()));
+
+            // Update Prometheus gauges
+            metrics::gauge!("consensus.mempool_pending_count").set(pool_stats.pending_size as f64);
+            metrics::gauge!("consensus.mempool_queued_count").set(pool_stats.queued_size as f64);
 
             slog::info!(
                 logger,

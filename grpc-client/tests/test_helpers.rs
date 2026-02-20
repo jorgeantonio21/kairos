@@ -177,6 +177,7 @@ pub async fn spawn_test_server() -> TestServerHandle {
         queues.p2p_tx_notify,
         queues.mempool_tx_queue,
         queues.p2p_ready,
+        None, // prometheus_handle
         logger,
     );
 

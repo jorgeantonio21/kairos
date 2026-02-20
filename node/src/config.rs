@@ -3,7 +3,10 @@
 //! Combines all service configurations into a unified `NodeConfig` that can be
 //! loaded from TOML/YAML files or environment variables.
 
-use std::path::Path;
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use figment::{
@@ -73,6 +76,64 @@ pub struct NodeConfig {
     /// Validator identity configuration.
     #[serde(default)]
     pub identity: IdentityConfig,
+
+    /// Metrics (Prometheus) configuration.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
+
+    /// Logging configuration.
+    #[serde(default)]
+    pub logging: LoggingConfig,
+}
+
+/// Prometheus metrics exporter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    /// Enable the Prometheus HTTP endpoint.
+    pub enabled: bool,
+    /// Socket address for the `/metrics` endpoint.
+    pub listen_address: SocketAddr,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_address: "127.0.0.1:9090".parse().unwrap(),
+        }
+    }
+}
+
+/// Log output format.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// Human-readable terminal output (slog-term).
+    #[default]
+    Terminal,
+    /// Structured JSON output (slog-json).
+    Json,
+}
+
+/// Logging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// Output format.
+    pub format: LogFormat,
+    /// Minimum log level (error, warn, info, debug).
+    pub level: String,
+    /// Optional file path for log output.
+    pub file: Option<PathBuf>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            format: LogFormat::Terminal,
+            level: "info".to_string(),
+            file: None,
+        }
+    }
 }
 
 impl NodeConfig {

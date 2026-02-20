@@ -52,6 +52,7 @@ use consensus::{
     },
     crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
     mempool::MempoolService,
+    metrics::ConsensusMetrics,
     state::{address::Address, peer::PeerSet, transaction::Transaction},
     storage::store::ConsensusStore,
     validation::PendingStateWriter,
@@ -243,6 +244,7 @@ fn create_validator_node_setup<const N: usize, const F: usize, const M_SIZE: usi
         mempool_channels.finalized_producer,
         persistence_writer,
         DEFAULT_TICK_INTERVAL,
+        Arc::new(ConsensusMetrics::new()),
         logger.new(o!("component" => "consensus")),
     )
     .expect("Failed to create consensus engine");
@@ -263,6 +265,7 @@ fn create_validator_node_setup<const N: usize, const F: usize, const M_SIZE: usi
         Arc::clone(&p2p_handle.tx_broadcast_notify),
         mempool_tx_queue,
         Arc::clone(&p2p_ready),
+        None, // prometheus_handle
         logger.new(o!("component" => "grpc")),
     );
 

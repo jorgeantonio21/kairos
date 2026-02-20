@@ -215,6 +215,7 @@ use crate::{
     consensus_manager::{events::ViewProgressEvent, view_manager::ViewProgressManager},
     crypto::aggregated::{BlsSecretKey, PeerId},
     mempool::{FinalizedNotification, ProposalRequest, ProposalResponse},
+    metrics::ConsensusMetrics,
     state::{block::Block, notarizations::Vote, transaction::Transaction},
 };
 
@@ -269,6 +270,9 @@ pub struct ConsensusStateMachine<const N: usize, const F: usize, const M_SIZE: u
     /// Notify to wake up the P2P service when broadcast queue has data.
     broadcast_notify: Arc<tokio::sync::Notify>,
 
+    /// Consensus metrics handles
+    metrics: Arc<ConsensusMetrics>,
+
     /// Logger for logging events
     logger: slog::Logger,
 }
@@ -286,6 +290,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         tick_interval: Duration,
         shutdown_signal: Arc<AtomicBool>,
         broadcast_notify: Arc<tokio::sync::Notify>,
+        metrics: Arc<ConsensusMetrics>,
         logger: slog::Logger,
     ) -> Result<Self> {
         Ok(Self {
@@ -300,6 +305,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             tick_interval,
             shutdown_signal,
             broadcast_notify,
+            metrics,
             logger,
         })
     }
@@ -320,9 +326,14 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             // Process all available consensus messages from the network
             while let Ok(message) = self.message_consumer.pop() {
                 did_work = true;
+                self.record_message_type_metric(&message);
+                let msg_start = Instant::now();
                 if let Err(e) = self.handle_consensus_message(message) {
                     slog::warn!(self.logger, "Error handling consensus message: {}", e);
                 }
+                self.metrics
+                    .message_processing_duration_seconds
+                    .record(msg_start.elapsed().as_secs_f64());
                 // Check shutdown between messages to allow timely exit
                 if self.shutdown_signal.load(Ordering::Relaxed) {
                     break;
@@ -332,12 +343,16 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             // Periodic tick
             if last_tick.elapsed() >= self.tick_interval {
                 did_work = true;
+                let tick_start = Instant::now();
                 match self.handle_tick() {
                     Ok(_) => {}
                     Err(e) => {
                         slog::warn!(self.logger, "Error handling tick: {}", e);
                     }
                 }
+                self.metrics
+                    .tick_duration_seconds
+                    .record(tick_start.elapsed().as_secs_f64());
                 last_tick = Instant::now();
             }
 
@@ -354,6 +369,25 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         );
 
         Ok(())
+    }
+
+    /// Record per-message-type counter.
+    fn record_message_type_metric(&self, message: &ConsensusMessage<N, F, M_SIZE>) {
+        match message {
+            ConsensusMessage::BlockProposal(_) => self.metrics.messages_block_proposal.increment(1),
+            ConsensusMessage::Vote(_) => self.metrics.messages_vote.increment(1),
+            ConsensusMessage::Nullify(_) => self.metrics.messages_nullify.increment(1),
+            ConsensusMessage::MNotarization(_) => {
+                self.metrics.messages_m_notarization.increment(1);
+            }
+            ConsensusMessage::Nullification(_) => {
+                self.metrics.messages_nullification.increment(1);
+            }
+            ConsensusMessage::BlockRecoveryRequest { .. }
+            | ConsensusMessage::BlockRecoveryResponse { .. } => {
+                self.metrics.messages_block_recovery.increment(1);
+            }
+        }
     }
 
     /// Stop the state machine gracefully
@@ -410,6 +444,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 parent_block_hash,
             } => self.propose_block(view, parent_block_hash),
             ViewProgressEvent::ShouldVote { view, block_hash } => {
+                self.metrics.votes_sent_total.increment(1);
                 self.vote_for_block(view, block_hash)
             }
             ViewProgressEvent::ShouldMNotarize {
@@ -417,6 +452,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 block_hash,
                 should_forward_m_notarization,
             } => {
+                self.metrics.m_notarizations_total.increment(1);
                 // 1. Create and broadcast the M-notarization
                 self.create_and_broadcast_m_notarization(
                     view,
@@ -439,10 +475,16 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 Ok(())
             }
             ViewProgressEvent::ShouldFinalize { view, block_hash } => {
+                self.metrics.blocks_finalized_total.increment(1);
+                self.metrics.l_notarizations_total.increment(1);
                 self.finalize_view(view, block_hash)
             }
-            ViewProgressEvent::ShouldNullify { view } => self.nullify_view(view, false),
+            ViewProgressEvent::ShouldNullify { view } => {
+                self.metrics.nullify_messages_sent_total.increment(1);
+                self.nullify_view(view, false)
+            }
             ViewProgressEvent::ShouldBroadcastNullification { view } => {
+                self.metrics.nullifications_total.increment(1);
                 self.broadcast_nullification(view)
             }
             ViewProgressEvent::ShouldVoteAndMNotarize {
@@ -450,6 +492,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 block_hash,
                 should_forward_m_notarization,
             } => {
+                self.metrics.votes_sent_total.increment(1);
+                self.metrics.m_notarizations_total.increment(1);
                 // 1. Vote for the block and create and broadcast the M-notarization
                 self.vote_for_block(view, block_hash)?;
 
@@ -472,6 +516,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 Ok(())
             }
             ViewProgressEvent::ShouldVoteAndFinalize { view, block_hash } => {
+                self.metrics.votes_sent_total.increment(1);
+                self.metrics.blocks_finalized_total.increment(1);
+                self.metrics.l_notarizations_total.increment(1);
                 self.vote_for_block(view, block_hash)?;
                 self.finalize_view(view, block_hash)
             }
@@ -481,6 +528,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 notarized_block_hash,
                 should_forward_m_notarization,
             } => {
+                self.metrics.current_view.set(new_view as f64);
                 slog::info!(
                     self.logger,
                     "Progressed to view {} with M-notarization (block: {:?}, leader: {:?})",
@@ -503,6 +551,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 leader,
                 should_forward_m_notarization,
             } => {
+                self.metrics.votes_sent_total.increment(1);
+                self.metrics.m_notarizations_total.increment(1);
+                self.metrics.current_view.set(new_view as f64);
                 self.vote_for_block(old_view, block_hash)?;
                 self.create_and_broadcast_m_notarization(
                     old_view, // NOTE: The M-notarization is for the previous view (new_view - 1)
@@ -518,7 +569,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 parent_block_hash,
                 should_broadcast_nullification,
             } => {
+                self.metrics.current_view.set(new_view as f64);
                 if should_broadcast_nullification {
+                    self.metrics.nullifications_total.increment(1);
                     self.broadcast_nullification(new_view - 1)?; // NOTE: The nullification is for the previous view (new_view - 1)
                 }
                 self.progress_to_next_view(new_view, leader, parent_block_hash)?;
@@ -535,7 +588,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 slog::info!(self.logger, "TODO: Request missing state here");
                 Ok(())
             }
-            ViewProgressEvent::ShouldNullifyView { view } => self.nullify_view(view, false),
+            ViewProgressEvent::ShouldNullifyView { view } => {
+                self.metrics.nullify_messages_sent_total.increment(1);
+                self.nullify_view(view, false)
+            }
             ViewProgressEvent::BroadcastConsensusMessage { message } => {
                 self.broadcast_consensus_message(*message)
             }
@@ -543,6 +599,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 start_view,
                 should_broadcast_nullification,
             } => {
+                self.metrics.cascade_nullifications_total.increment(1);
                 let current_view = self.view_manager.current_view_number();
 
                 slog::warn!(
@@ -611,6 +668,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 Ok(())
             }
             ViewProgressEvent::ShouldNullifyRange { start_view } => {
+                self.metrics.nullify_messages_sent_total.increment(1);
                 let current_view = self.view_manager.current_view_number();
 
                 slog::warn!(
@@ -681,6 +739,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
 
     /// Proposes a block, as a leader, for the current view
     fn propose_block(&mut self, view: u64, parent_block_hash: [u8; blake3::OUT_LEN]) -> Result<()> {
+        let proposal_start = Instant::now();
         slog::debug!(
             self.logger,
             "Proposing block for view {view} with parent block hash {parent_block_hash:?}"
@@ -788,6 +847,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         // Mark the block as proposed
         self.view_manager.mark_proposed(view)?;
 
+        self.metrics.proposals_total.increment(1);
+        self.metrics
+            .proposal_build_duration_seconds
+            .record(proposal_start.elapsed().as_secs_f64());
+
         Ok(())
     }
 
@@ -879,6 +943,15 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         };
 
         self.view_manager.finalize_view(view)?;
+
+        self.metrics.finalized_view.set(view as f64);
+        let current = self.view_manager.current_view_number();
+        self.metrics
+            .views_since_finalization
+            .set((current.saturating_sub(view)) as f64);
+        self.metrics
+            .non_finalized_views
+            .set(self.view_manager.non_finalized_view_count() as f64);
 
         // Best-effort notification (don't fail finalization if channel is full)
         best_effort_notification(&mut self.finalized_producer, notification, &self.logger)?;
@@ -1145,6 +1218,7 @@ pub struct ConsensusStateMachineBuilder<const N: usize, const F: usize, const M_
     secret_key: Option<BlsSecretKey>,
     tick_interval: Option<Duration>,
     shutdown_signal: Option<Arc<AtomicBool>>,
+    metrics: Option<Arc<ConsensusMetrics>>,
     logger: Option<slog::Logger>,
     message_consumer: Option<Consumer<ConsensusMessage<N, F, M_SIZE>>>,
     broadcast_producer: Option<Producer<ConsensusMessage<N, F, M_SIZE>>>,
@@ -1171,6 +1245,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
             secret_key: None,
             tick_interval: None,
             shutdown_signal: None,
+            metrics: None,
             logger: None,
             message_consumer: None,
             broadcast_producer: None,
@@ -1198,6 +1273,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
 
     pub fn with_shutdown_signal(mut self, shutdown_signal: Arc<AtomicBool>) -> Self {
         self.shutdown_signal = Some(shutdown_signal);
+        self
+    }
+
+    pub fn with_metrics(mut self, metrics: Arc<ConsensusMetrics>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -1273,6 +1353,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
                 .ok_or_else(|| anyhow::anyhow!("Shutdown signal not set"))?,
             self.broadcast_notify
                 .ok_or_else(|| anyhow::anyhow!("Broadcast notify not set"))?,
+            self.metrics
+                .unwrap_or_else(|| Arc::new(ConsensusMetrics::new())),
             self.logger
                 .ok_or_else(|| anyhow::anyhow!("Logger not set"))?,
         )
@@ -1290,6 +1372,7 @@ mod tests {
             view_manager::ViewProgressManager,
         },
         crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+        metrics::ConsensusMetrics,
         state::{address::Address, peer::PeerSet, transaction::Transaction},
         storage::store::ConsensusStore,
         validation::PendingStateWriter,
@@ -1465,6 +1548,7 @@ mod tests {
                 Duration::from_millis(100),
                 shutdown,
                 Arc::new(tokio::sync::Notify::new()),
+                Arc::new(ConsensusMetrics::new()),
                 logger,
             )
             .unwrap();

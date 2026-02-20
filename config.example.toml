@@ -211,6 +211,35 @@ bls_secret_key_path = "/etc/kairos/keys/bls.key"
 # SECURITY: This file must be kept secure and backed up.
 ed25519_secret_key_path = "/etc/kairos/keys/ed25519.key"
 
+# -----------------------------------------------------------------------------
+# METRICS CONFIGURATION
+# -----------------------------------------------------------------------------
+# Prometheus metrics exporter. When enabled, exposes a /metrics HTTP endpoint.
+
+[metrics]
+# Enable the Prometheus HTTP endpoint.
+enabled = false
+
+# Socket address for the /metrics endpoint.
+# Prometheus should be configured to scrape this address.
+listen_address = "127.0.0.1:9090"
+
+# -----------------------------------------------------------------------------
+# LOGGING CONFIGURATION
+# -----------------------------------------------------------------------------
+# Structured logging output settings.
+
+[logging]
+# Output format. Options: "terminal" (human-readable), "json" (structured)
+format = "terminal"
+
+# Minimum log level. Options: "error", "warn", "info", "debug"
+level = "info"
+
+# Optional file path for log output.
+# If not set, logs are written to stdout.
+# file = "/var/log/kairos/node.log"
+
 # =============================================================================
 # RPC NODE CONFIGURATION (for read-only syncing nodes)
 # =============================================================================

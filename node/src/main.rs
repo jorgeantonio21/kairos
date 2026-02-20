@@ -28,7 +28,9 @@ use ark_serialize::CanonicalSerialize;
 use commonware_runtime::Runner;
 use commonware_runtime::tokio::Runner as TokioRunner;
 use consensus::crypto::aggregated::BlsSecretKey;
+use consensus::metrics::ConsensusMetrics;
 use node::ValidatorNode;
+use node::config::LogFormat;
 use p2p::ValidatorIdentity;
 
 /// Network size constants
@@ -80,29 +82,50 @@ enum Command {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let logger = create_logger(&args.log_level);
 
     match args.command {
         Command::Run { config, node_index } => {
+            // Load config first to get logging settings
+            let node_config = node::NodeConfig::from_path(&config)
+                .with_context(|| format!("Failed to load config from {}", config.display()))?;
+
+            let logger = create_logger(&args.log_level, &node_config.logging);
+
+            // Install Prometheus exporter if enabled
+            if node_config.metrics.enabled {
+                let builder = metrics_exporter_prometheus::PrometheusBuilder::new()
+                    .with_http_listener(node_config.metrics.listen_address);
+                builder
+                    .install()
+                    .context("Failed to install Prometheus metrics exporter")?;
+                ConsensusMetrics::describe();
+                slog::info!(
+                    logger,
+                    "Prometheus metrics exporter started";
+                    "listen_address" => %node_config.metrics.listen_address,
+                );
+            }
+
             let shutdown = Arc::new(AtomicBool::new(false));
             ctrlc_handler(Arc::clone(&shutdown));
-            run_node(config, node_index, logger, shutdown)
+            run_node_with_config(config, node_config, node_index, logger, shutdown)
         }
-        Command::GenerateConfigs { output_dir } => generate_configs(&output_dir, logger),
+        Command::GenerateConfigs { output_dir } => {
+            let logger = create_logger(&args.log_level, &node::config::LoggingConfig::default());
+            generate_configs(&output_dir, logger)
+        }
     }
 }
 
-/// Run a validator node from configuration.
-fn run_node(
+/// Run a validator node from a pre-loaded configuration.
+fn run_node_with_config(
     config_path: PathBuf,
+    config: node::NodeConfig,
     node_index_override: Option<usize>,
     logger: Logger,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     slog::info!(logger, "Loading configuration"; "path" => %config_path.display());
-
-    let config = node::NodeConfig::from_path(&config_path)
-        .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
 
     let node_index = node_index_override.unwrap_or(config.rpc.peer_id as usize);
 
@@ -365,9 +388,17 @@ fn generate_deterministic_identities(count: usize) -> Vec<ValidatorIdentity> {
         .collect()
 }
 
-fn create_logger(level: &str) -> Logger {
+fn create_logger(cli_level: &str, logging_config: &node::config::LoggingConfig) -> Logger {
     use slog::Level;
-    let level = match level.to_lowercase().as_str() {
+
+    // CLI flag overrides config file
+    let level_str = if cli_level != "info" {
+        cli_level
+    } else {
+        &logging_config.level
+    };
+
+    let level = match level_str.to_lowercase().as_str() {
         "trace" => Level::Trace,
         "debug" => Level::Debug,
         "info" => Level::Info,
@@ -376,11 +407,21 @@ fn create_logger(level: &str) -> Logger {
         _ => Level::Info,
     };
 
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = slog::LevelFilter::new(drain, level).fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-    Logger::root(drain, o!("version" => env!("CARGO_PKG_VERSION")))
+    match logging_config.format {
+        LogFormat::Json => {
+            let drain = slog_json::Json::default(std::io::stdout()).fuse();
+            let drain = slog::LevelFilter::new(drain, level).fuse();
+            let drain = slog_async::Async::new(drain).build().fuse();
+            Logger::root(drain, o!("version" => env!("CARGO_PKG_VERSION")))
+        }
+        LogFormat::Terminal => {
+            let decorator = slog_term::TermDecorator::new().build();
+            let drain = slog_term::FullFormat::new(decorator).build().fuse();
+            let drain = slog::LevelFilter::new(drain, level).fuse();
+            let drain = slog_async::Async::new(drain).build().fuse();
+            Logger::root(drain, o!("version" => env!("CARGO_PKG_VERSION")))
+        }
+    }
 }
 
 fn ctrlc_handler(shutdown: Arc<AtomicBool>) {

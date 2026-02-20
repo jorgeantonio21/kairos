@@ -371,6 +371,7 @@ mod tests {
             block_events: None,
             consensus_events: None,
             tx_events: None,
+            prometheus_handle: None,
             logger: create_test_logger(),
         };
 
@@ -407,6 +408,7 @@ mod tests {
             block_events: None,
             consensus_events: None,
             tx_events: None,
+            prometheus_handle: None,
             logger: create_test_logger(),
         };
 

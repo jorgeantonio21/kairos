@@ -18,6 +18,7 @@ use consensus::{
     consensus_manager::leader_manager::LeaderSelectionStrategy,
     crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
     mempool::MempoolService,
+    metrics::ConsensusMetrics,
     state::{address::Address, block::Block, peer::PeerSet, transaction::Transaction},
     storage::store::ConsensusStore,
     validation::PendingStateWriter,
@@ -425,6 +426,7 @@ fn create_gossip_node(
                 mempool_channels.finalized_producer,
                 persistence_writer,
                 DEFAULT_TICK_INTERVAL,
+                Arc::new(ConsensusMetrics::new()),
                 logger.new(o!("component" => "consensus")),
             )
             .expect("Failed to create consensus engine"),
@@ -453,6 +455,7 @@ fn create_gossip_node(
         Arc::clone(&p2p_handle.tx_broadcast_notify), // P2P broadcast notify
         grpc_tx_queue,                               // Mempool queue (gRPC → Mempool)
         Arc::clone(&p2p_ready),
+        None, // prometheus_handle
         logger.new(o!("component" => "grpc")),
     );
 

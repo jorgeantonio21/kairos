@@ -369,7 +369,6 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
 
 use anyhow::Result;
-use tracing::instrument;
 
 use crate::{
     consensus::ConsensusMessage,
@@ -492,7 +491,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         );
 
         let block_validator = BlockValidator::new(persistence_writer.reader());
-        let view_chain = ViewChain::new(view1_context, persistence_writer);
+        let view_chain = ViewChain::new(
+            view1_context,
+            persistence_writer,
+            logger.new(slog::o!("component" => "view_chain")),
+        );
 
         Ok(Self {
             config,
@@ -546,7 +549,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         let leader_id = leader_manager.leader_for_view(1)?.peer_id();
         let view_context = ViewContext::new(1, leader_id, replica_id, Block::genesis_hash());
 
-        let view_chain = ViewChain::new(view_context, persistence_writer);
+        let view_chain = ViewChain::new(
+            view_context,
+            persistence_writer,
+            logger.new(slog::o!("component" => "view_chain")),
+        );
 
         Ok(Self {
             config,
@@ -628,7 +635,6 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
     /// - Voting on valid proposals or M-notarizations
     /// - Timeout-based nullification
     /// - Nullification based on conflicting votes
-    #[instrument("debug", skip_all)]
     pub fn tick(&mut self) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
         // Clean up canonical recovery entries: remove views that have been recovered or GC'd.
         self.canonical_recovery_pending.retain(|(view, _)| {
@@ -838,6 +844,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
     /// Returns the current view number.
     pub fn current_view_number(&self) -> u64 {
         self.view_chain.current_view_number()
+    }
+
+    /// Returns the number of non-finalized view contexts.
+    pub fn non_finalized_view_count(&self) -> usize {
+        self.view_chain.non_finalized_views.len()
     }
 
     /// Returns a mutable reference to the view context for a given view.
@@ -1724,7 +1735,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
 
     fn _try_update_view(&mut self, view: u64) -> Result<()> {
         // TODO: Implement view update logic
-        tracing::info!("Trying to update view to {}", view);
+        slog::info!(self.logger, "Trying to update view to {}", view);
         Ok(())
     }
 }

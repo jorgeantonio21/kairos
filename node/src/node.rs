@@ -86,6 +86,7 @@ use consensus::consensus::ConsensusMessage;
 use consensus::consensus_manager::config::ConsensusConfig;
 use consensus::consensus_manager::consensus_engine::ConsensusEngine;
 use consensus::mempool::MempoolService;
+use consensus::metrics::ConsensusMetrics;
 use consensus::state::transaction::Transaction;
 use consensus::storage::store::ConsensusStore;
 use consensus::validation::PendingStateWriter;
@@ -278,6 +279,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             Arc::clone(&p2p_handle.tx_broadcast_notify),
             Arc::clone(&grpc_tx_queue),
             Arc::clone(&p2p_ready),
+            None, // prometheus_handle
             logger.new(o!("component" => "grpc")),
         );
 
@@ -306,7 +308,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             .context("Failed to spawn gRPC server thread")?;
         slog::debug!(logger, "gRPC server spawned"; "addr" => %grpc_addr);
 
-        // 10. Spawn Consensus Engine
+        // 10. Create consensus metrics
+        let metrics = Arc::new(ConsensusMetrics::new());
+
+        // 11. Spawn Consensus Engine
         let consensus_engine = ConsensusEngine::<N, F, M_SIZE>::new(
             consensus_config,
             peer_id,
@@ -319,6 +324,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             mempool_channels.finalized_producer,
             persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            metrics,
             logger.new(o!("component" => "consensus")),
         )
         .context("Failed to create consensus engine")?;

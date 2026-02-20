@@ -29,6 +29,7 @@ use commonware_runtime::Runner;
 use commonware_runtime::tokio::Runner as TokioRunner;
 use consensus::crypto::aggregated::BlsSecretKey;
 use consensus::metrics::ConsensusMetrics;
+use metrics_exporter_prometheus::PrometheusHandle;
 use node::ValidatorNode;
 use node::config::LogFormat;
 use p2p::ValidatorIdentity;
@@ -92,11 +93,11 @@ fn main() -> Result<()> {
             let logger = create_logger(&args.log_level, &node_config.logging);
 
             // Install Prometheus exporter if enabled
-            if node_config.metrics.enabled {
+            let prometheus_handle = if node_config.metrics.enabled {
                 let builder = metrics_exporter_prometheus::PrometheusBuilder::new()
                     .with_http_listener(node_config.metrics.listen_address);
-                builder
-                    .install()
+                let handle = builder
+                    .install_recorder()
                     .context("Failed to install Prometheus metrics exporter")?;
                 ConsensusMetrics::describe();
                 slog::info!(
@@ -104,11 +105,14 @@ fn main() -> Result<()> {
                     "Prometheus metrics exporter started";
                     "listen_address" => %node_config.metrics.listen_address,
                 );
-            }
+                Some(handle)
+            } else {
+                None
+            };
 
             let shutdown = Arc::new(AtomicBool::new(false));
             ctrlc_handler(Arc::clone(&shutdown));
-            run_node_with_config(config, node_config, node_index, logger, shutdown)
+            run_node_with_config(config, node_config, node_index, prometheus_handle, logger, shutdown)
         }
         Command::GenerateConfigs { output_dir } => {
             let logger = create_logger(&args.log_level, &node::config::LoggingConfig::default());
@@ -122,6 +126,7 @@ fn run_node_with_config(
     config_path: PathBuf,
     config: node::NodeConfig,
     node_index_override: Option<usize>,
+    prometheus_handle: Option<PrometheusHandle>,
     logger: Logger,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -152,7 +157,8 @@ fn run_node_with_config(
             .with_context(|| format!("Failed to create storage directory: {}", parent.display()))?;
     }
 
-    let node = ValidatorNode::<N, F, M_SIZE>::from_config(config, identity, logger.clone())?;
+    let node =
+        ValidatorNode::<N, F, M_SIZE>::from_config(config, identity, prometheus_handle, logger.clone())?;
 
     slog::info!(logger, "Node spawned, waiting for P2P bootstrap...");
 

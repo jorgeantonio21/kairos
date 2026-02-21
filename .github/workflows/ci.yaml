@@ -62,3 +62,27 @@ jobs:
 
       - name: Build node package
         run: nix build
+
+  e2e:
+    name: E2E Consensus
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run E2E happy path (60s)
+        env:
+          E2E_DURATION_SECS: 60
+        run: >
+          nix develop --command cargo test --release --package tests
+          test_multi_node_happy_path -- --ignored --nocapture
+
+      - name: Run E2E continuous load (60s)
+        env:
+          E2E_DURATION_SECS: 60
+        run: >
+          nix develop --command cargo test --release --package tests
+          test_multi_node_continuous_load -- --ignored --nocapture

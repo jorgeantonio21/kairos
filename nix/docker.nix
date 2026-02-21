@@ -8,7 +8,7 @@ pkgs.dockerTools.buildLayeredImage {
   contents = [
     kairos-node
     pkgs.cacert          # TLS root certificates
-    pkgs.busybox         # minimal shell for debugging (optional)
+    pkgs.busybox         # wget for health checks, minimal shell for debugging
   ];
 
   config = {

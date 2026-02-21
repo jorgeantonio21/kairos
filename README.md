@@ -508,6 +508,29 @@ Contributions are welcome. Please ensure:
 
 > **Tip:** Use `nix develop` to get all the tools above in one command.
 
+## Deployment
+
+The `deployments/` directory contains a production-ready Docker Compose stack
+for local development and testing. See [deployments/README.md](deployments/README.md)
+for full documentation.
+
+- **Single node:** `docker compose -f deployments/docker-compose.yml up`
+- **6-validator localnet:** `cd deployments/localnet && docker compose up`
+- **Docker images:** built via Nix (`nix build .#dockerImage`) for minimal, reproducible images
+- **Releases:** tagged versions are pushed to GHCR (`ghcr.io/jorgeantonio21/kairos/node`)
+
+### Deployment Roadmap
+
+| Phase | Status |
+|-------|--------|
+| Local single-node (Docker Compose) | ✅ |
+| Multi-node localnet (6 validators) | ✅ |
+| Observability (Prometheus + Loki + Grafana) | ✅ |
+| Alerting rules (Prometheus) | ✅ |
+| Nix-built Docker images (GHCR) | ✅ |
+| Terraform (AWS/GCP cloud deployment) | 🔜 Planned |
+| Kubernetes (Helm charts) | 🔜 Planned |
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.

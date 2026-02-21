@@ -328,28 +328,123 @@ curl -s 'http://localhost:3100/loki/api/v1/labels' | jq .
 curl -s 'http://localhost:3100/loki/api/v1/label/level/values' | jq .
 ```
 
+## Alerting
+
+Prometheus alerting rules are pre-configured in `prometheus/alerts.yml`:
+
+| Alert | Condition | Severity |
+|-------|-----------|----------|
+| ConsensusStalled | `views_since_finalization > 10` for 2m | critical |
+| NodeDown | `up == 0` for 1m | critical |
+| HighNullificationRate | Nullification rate > 0.5/s for 3m | warning |
+| CascadeNullifications | Cascade nullifications detected for 2m | warning |
+| HighFinalizationLatency | p99 latency > 5s for 5m | warning |
+| BlockValidationFailures | Any validation failures for 1m | critical |
+| MempoolBackpressure | Pending txs > 5000 for 5m | warning |
+| RingBufferSaturation | Utilization > 90% for 1m | critical |
+| HighInvalidVoteRate | Invalid votes > 10% for 5m | warning |
+
+View alerts at **<http://localhost:9091/alerts>** (Prometheus UI) or in
+Grafana under **Alerting** → **Alert rules**.
+
+## Health Checks
+
+All services have Docker health checks configured:
+
+| Service | Health Endpoint | Interval |
+|---------|-----------------|----------|
+| `kairos-node` | `GET /metrics` on `:9090` | 10s |
+| `prometheus` | `GET /-/healthy` on `:9090` | 10s |
+| `loki` | `GET /ready` on `:3100` | 10s |
+| `grafana` | `GET /api/health` on `:3000` | 10s |
+
+Services with `depends_on` use `condition: service_healthy` to wait for
+dependencies to be ready before starting.
+
+## Data Persistence
+
+Data is stored in bind-mounted directories under `deployments/data/`:
+
+```
+data/
+├── node/         ← blockchain state (redb)
+├── prometheus/   ← metrics TSDB
+├── loki/         ← log indices
+└── grafana/      ← dashboards, settings
+```
+
+Data survives `docker compose down` / `up` cycles. To back up or restore:
+
+```bash
+# Backup
+./scripts/backup.sh              # → kairos-backup-YYYYMMDD_HHMMSS.tar.gz
+
+# Restore
+./scripts/restore.sh backup.tar.gz
+```
+
+## Multi-Node Local Network
+
+For testing consensus with 6 validators:
+
+```bash
+cd deployments/localnet
+
+# Generate deterministic key material
+./generate-keys.sh
+
+# Build and load the Docker image
+nix build ../../#dockerImage && docker load < ../../result
+
+# Start the 6-validator cluster + observability
+docker compose up
+```
+
+Each validator exposes unique ports:
+
+| Validator | gRPC | Metrics | P2P |
+|-----------|------|---------|-----|
+| validator-0 | 50051 | 9090 | 9000 |
+| validator-1 | 50052 | 9092 | 9001 |
+| validator-2 | 50053 | 9093 | 9002 |
+| validator-3 | 50054 | 9094 | 9003 |
+| validator-4 | 50055 | 9095 | 9004 |
+| validator-5 | 50056 | 9096 | 9005 |
+
+Grafana is at **<http://localhost:3000>** and shows metrics from all 6 nodes.
+
 ## Directory Layout
 
 ```
 deployments/
 ├── README.md                              ← you are here
-├── docker-compose.yml                     ← orchestrates all services
+├── docker-compose.yml                     ← single-node stack
 ├── config/
 │   └── node.toml                          ← validator node configuration
 ├── prometheus/
-│   └── prometheus.yml                     ← scrape targets & intervals
+│   ├── prometheus.yml                     ← scrape targets & intervals
+│   └── alerts.yml                         ← alerting rules (9 rules)
 ├── loki/
 │   └── loki.yml                           ← Loki storage & retention config
 ├── alloy/
 │   └── config.alloy                       ← Alloy log collection & pipeline config
-└── grafana/
-    ├── dashboards/
-    │   └── consensus.json                 ← pre-provisioned Consensus dashboard
-    └── provisioning/
-        ├── dashboards/
-        │   └── dashboards.yml             ← auto-load dashboards from disk
-        └── datasources/
-            └── prometheus.yml             ← Prometheus + Loki datasources
+├── grafana/
+│   ├── dashboards/
+│   │   └── consensus.json                 ← pre-provisioned Consensus dashboard
+│   └── provisioning/
+│       ├── dashboards/
+│       │   └── dashboards.yml             ← auto-load dashboards from disk
+│       └── datasources/
+│           └── prometheus.yml             ← Prometheus + Loki datasources
+├── localnet/
+│   ├── docker-compose.yml                 ← 6-validator multi-node stack
+│   ├── generate-keys.sh                   ← key generation script
+│   └── prometheus.yml                     ← multi-target Prometheus config
+├── scripts/
+│   ├── healthcheck.sh                     ← Docker health check probe
+│   ├── backup.sh                          ← data backup script
+│   └── restore.sh                         ← data restore script
+└── data/                                  ← bind-mounted persistent data (gitignored)
 ```
 
 ## Adding New Scrape Targets
@@ -370,3 +465,4 @@ Restart the stack for changes to take effect:
 ```bash
 docker compose -f deployments/docker-compose.yml restart prometheus
 ```
+

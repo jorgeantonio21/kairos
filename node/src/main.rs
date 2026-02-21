@@ -112,7 +112,14 @@ fn main() -> Result<()> {
 
             let shutdown = Arc::new(AtomicBool::new(false));
             ctrlc_handler(Arc::clone(&shutdown));
-            run_node_with_config(config, node_config, node_index, prometheus_handle, logger, shutdown)
+            run_node_with_config(
+                config,
+                node_config,
+                node_index,
+                prometheus_handle,
+                logger,
+                shutdown,
+            )
         }
         Command::GenerateConfigs { output_dir } => {
             let logger = create_logger(&args.log_level, &node::config::LoggingConfig::default());
@@ -157,8 +164,12 @@ fn run_node_with_config(
             .with_context(|| format!("Failed to create storage directory: {}", parent.display()))?;
     }
 
-    let node =
-        ValidatorNode::<N, F, M_SIZE>::from_config(config, identity, prometheus_handle, logger.clone())?;
+    let node = ValidatorNode::<N, F, M_SIZE>::from_config(
+        config,
+        identity,
+        prometheus_handle,
+        logger.clone(),
+    )?;
 
     slog::info!(logger, "Node spawned, waiting for P2P bootstrap...");
 

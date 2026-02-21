@@ -8,30 +8,48 @@ services:
       - /etc/kairos/node.toml
     volumes:
       - ./config/node.toml:/etc/kairos/node.toml:ro
-      - node-data:/data
+      - ./data/node:/data
     ports:
       - "50051:50051"
       - "9090:9090"
       - "9000:9000"
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:9090/metrics" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   prometheus:
     image: prom/prometheus:v3.3.0
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./data/prometheus:/prometheus
     ports:
       - "9091:9090"
     depends_on:
-      - kairos-node
+      kairos-node:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
   loki:
     image: grafana/loki:3.4.2
     volumes:
       - ./loki/loki.yml:/etc/loki/local-config.yaml:ro
-      - loki-data:/loki
+      - ./data/loki:/loki
     ports:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3100/ready" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
   alloy:
     image: grafana/alloy:v1.8.3
@@ -43,14 +61,15 @@ services:
       - /etc/alloy/config.alloy
       - --storage.path=/var/lib/alloy/data
     depends_on:
-      - loki
+      loki:
+        condition: service_healthy
 
   grafana:
     image: grafana/grafana:11.6.0
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana-data:/var/lib/grafana
+      - ./data/grafana:/var/lib/grafana
     ports:
       - "3000:3000"
     environment:
@@ -58,11 +77,12 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     depends_on:
-      - prometheus
-      - loki
-
-volumes:
-  node-data:
-  prometheus-data:
-  loki-data:
-  grafana-data:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3

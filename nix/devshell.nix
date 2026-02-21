@@ -23,10 +23,14 @@ let
 in pkgs.mkShell {
   name = "kairos-dev";
 
-  nativeBuildInputs = [ rustNightly rustStable ] ++ systemDeps ++ devTools;
+  nativeBuildInputs = [ rustStable ] ++ systemDeps ++ devTools;
 
   LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
   PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+
+  # Use nightly rustfmt via env var (cargo fmt respects this).
+  # Nightly is NOT on PATH — only stable's cargo/rustc/clippy are.
+  RUSTFMT = "${rustNightly}/bin/rustfmt";
 
   shellHook = ''
     echo "🚀 Kairos dev shell activated"

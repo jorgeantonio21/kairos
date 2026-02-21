@@ -1,8 +1,7 @@
 services:
   kairos-node:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile
+    # Image built by Nix: nix build .#dockerImage && docker load < result
+    image: kairos-node:latest
     command:
       - run
       - --config
@@ -25,6 +24,27 @@ services:
     depends_on:
       - kairos-node
 
+  loki:
+    image: grafana/loki:3.4.2
+    volumes:
+      - ./loki/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+
+  alloy:
+    image: grafana/alloy:v1.8.3
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+    depends_on:
+      - loki
+
   grafana:
     image: grafana/grafana:11.6.0
     volumes:
@@ -39,8 +59,10 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     depends_on:
       - prometheus
+      - loki
 
 volumes:
   node-data:
   prometheus-data:
+  loki-data:
   grafana-data:

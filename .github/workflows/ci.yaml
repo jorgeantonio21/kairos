@@ -13,54 +13,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: rustfmt
-          toolchain: nightly-2025-09-19 # This is nightly one day after stable 1.90.0 released. (https://releases.rs/docs/1.90.0/)
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Check formatting
-        run: cargo +nightly-2025-09-19 fmt --all -- --check
+      - name: Check Rust formatting
+        run: nix develop --command cargo +nightly-2025-09-19 fmt --all -- --check
 
   toml-format:
-    name: toml-format
+    name: TOML Format
     runs-on: ubuntu-latest
     steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Install Taplo
-        run: |
-          curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz \
-            | gzip -d - \
-            | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - name: Run Taplo
-        run: taplo fmt --check
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Check TOML formatting
+        run: nix develop --command taplo fmt --check
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-apt-dependencies
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: rustfmt, clippy
-          toolchain: 1.90.0
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: nix develop --command cargo clippy --all-targets --all-features -- -D warnings
 
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-apt-dependencies
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: rustfmt, clippy
-          toolchain: 1.90.0
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Run tests
-        run: cargo test --all-features --verbose
+        run: nix develop --command cargo test --all-features --verbose
+
+  build:
+    name: Nix Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build node package
+        run: nix build

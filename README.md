@@ -233,27 +233,79 @@ core/
 
 ## Getting Started
 
-### Prerequisites
+### Using Nix (Recommended)
 
-- Rust 1.75 or later
-- RocksDB dependencies (automatically built)
+[Nix](https://nixos.org/) provides a reproducible development environment with all
+dependencies pre-configured. This is the fastest way to get started.
 
-### Building
+**Install Nix** (if you don't have it):
 
 ```bash
-# Clone the repository
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+```
+
+**Enter the dev shell:**
+
+```bash
+nix develop
+```
+
+This gives you Rust 1.90.0, protobuf compiler, OpenSSL, cargo-deny, git-cliff,
+taplo, and all other required tools — on both **macOS** and **Linux**.
+
+**Automatic activation with direnv** (optional):
+
+```bash
+# Install direnv: https://direnv.net/
+direnv allow
+# Now every `cd` into the repo auto-activates the environment
+```
+
+**Build & test:**
+
+```bash
+cargo build --release
+cargo test
+cargo bench
+```
+
+**Build a reproducible release binary via Nix:**
+
+```bash
+nix build
+./result/bin/node --help
+```
+
+**Build a minimal Docker image via Nix** (~50MB):
+
+```bash
+nix build .#dockerImage
+docker load < result
+docker run --rm kairos-node:latest --help
+```
+
+### Manual Setup (Without Nix)
+
+<details>
+<summary>Click to expand manual setup instructions</summary>
+
+**Prerequisites:**
+- Rust 1.90.0 (`rustup install 1.90.0`)
+- `protobuf-compiler` / `protobuf`
+- `pkg-config`, `libssl-dev` / `openssl`
+- `libclang-dev` / `llvm`
+- Linux only: `uuid-dev`, `libbsd-dev`
+
+```bash
 git clone https://github.com/jorgeantonio21/kairos.git
 cd core
 
-# Build all crates
 cargo build --release
-
-# Run tests
 cargo test
-
-# Run benchmarks
 cargo bench
 ```
+
+</details>
 
 ### Running a Node
 
@@ -450,8 +502,11 @@ Contributions are welcome. Please ensure:
 
 1. All tests pass (`cargo test`)
 2. No clippy warnings (`cargo clippy -- -D warnings`)
-3. Code is formatted (`cargo fmt`)
-4. Documentation is updated for public APIs
+3. Code is formatted (`cargo +nightly-2025-09-19 fmt`)
+4. TOML files are formatted (`taplo fmt`)
+5. Documentation is updated for public APIs
+
+> **Tip:** Use `nix develop` to get all the tools above in one command.
 
 ## License
 

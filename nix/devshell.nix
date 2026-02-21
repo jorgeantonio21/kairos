@@ -23,7 +23,7 @@ let
 in pkgs.mkShell {
   name = "kairos-dev";
 
-  nativeBuildInputs = [ rustStable rustNightly ] ++ systemDeps ++ devTools;
+  nativeBuildInputs = [ rustNightly rustStable ] ++ systemDeps ++ devTools;
 
   LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
   PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";

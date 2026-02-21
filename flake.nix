@@ -17,10 +17,13 @@
         pkgs = import nixpkgs { inherit system overlays; };
 
         # Rust toolchains
-        rustStable = pkgs.rust-bin.stable."1.90.0".default.override {
-          extensions = [ "rust-src" "clippy" ];
+        # Stable: everything except rustfmt (use minimal + explicit extensions)
+        rustStable = pkgs.rust-bin.stable."1.90.0".minimal.override {
+          extensions = [ "rust-src" "rust-std" "clippy" "cargo" "rustc" ];
         };
-        rustNightly = pkgs.rust-bin.nightly."2025-09-19".default.override {
+        # Nightly: only rustfmt (listed first so stable shadows cargo/rustc,
+        # but nightly's rustfmt remains the only one on PATH)
+        rustNightly = pkgs.rust-bin.nightly."2025-09-19".minimal.override {
           extensions = [ "rustfmt" ];
         };
 

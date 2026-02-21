@@ -502,7 +502,7 @@ Contributions are welcome. Please ensure:
 
 1. All tests pass (`cargo test`)
 2. No clippy warnings (`cargo clippy -- -D warnings`)
-3. Code is formatted (`cargo +nightly-2025-09-19 fmt`)
+3. Code is formatted (`cargo fmt`)
 4. TOML files are formatted (`taplo fmt`)
 5. Documentation is updated for public APIs
 

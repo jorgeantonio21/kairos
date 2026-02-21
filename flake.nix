@@ -17,9 +17,10 @@
         pkgs = import nixpkgs { inherit system overlays; };
 
         # Rust toolchains
-        # Stable: everything except rustfmt (use minimal + explicit extensions)
+        # Stable: includes cargo-fmt (via rustfmt component) for workspace discovery.
+        # The RUSTFMT env var in devshell.nix overrides which rustfmt binary is used.
         rustStable = pkgs.rust-bin.stable."1.90.0".minimal.override {
-          extensions = [ "rust-src" "rust-std" "clippy" "cargo" "rustc" ];
+          extensions = [ "rust-src" "rust-std" "clippy" "cargo" "rustc" "rustfmt" ];
         };
         # Nightly: only rustfmt (listed first so stable shadows cargo/rustc,
         # but nightly's rustfmt remains the only one on PATH)

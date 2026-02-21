@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: kairos
+    static_configs:
+      - targets:
+          - kairos-node:9090
+        labels:
+          instance: validator-0

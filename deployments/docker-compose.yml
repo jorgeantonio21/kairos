@@ -1,0 +1,46 @@
+services:
+  kairos-node:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    command:
+      - run
+      - --config
+      - /etc/kairos/node.toml
+    volumes:
+      - ./config/node.toml:/etc/kairos/node.toml:ro
+      - node-data:/data
+    ports:
+      - "50051:50051"
+      - "9090:9090"
+      - "9000:9000"
+
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    depends_on:
+      - kairos-node
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    depends_on:
+      - prometheus
+
+volumes:
+  node-data:
+  prometheus-data:
+  grafana-data:

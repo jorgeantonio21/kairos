@@ -1,0 +1,93 @@
+# Kairos Validator Node Configuration (Docker / Local Monitoring)
+
+[consensus]
+f              = 1
+leader_manager = "RoundRobin"
+n              = 6
+network        = "local"
+view_timeout   = { secs = 5, nanos = 0 }
+
+peers = [
+    "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "0x234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef0",
+    "0x34567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef01",
+    "0x4567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef012",
+    "0x567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef0123",
+    "0x67890abcdef1234567890abcdef1234567890abcdef1234567890abcdef01234",
+]
+
+[[consensus.genesis_accounts]]
+balance    = 1000000000
+public_key = "0xaabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
+
+[[consensus.genesis_accounts]]
+balance    = 500000000
+public_key = "0xeeff001122334455eeff001122334455eeff001122334455eeff001122334455"
+
+[storage]
+path = "./data/node0.redb"
+
+[p2p]
+bootstrap_timeout_ms        = 30000
+cluster_id                  = "kairos-local"
+consensus_rate_per_second   = 10000
+external_addr               = "kairos-node:9000"
+listen_addr                 = "0.0.0.0:9000"
+max_message_size            = 1048576
+maximum_number_faulty_peers = 1
+message_backlog             = 1024
+ping_interval_ms            = 500
+total_number_peers          = 6
+tx_broadcast_queue_size     = 100000
+tx_rate_per_second          = 50000
+
+[[p2p.validators]]
+address            = "kairos-node:9000"
+bls_peer_id        = 0
+ed25519_public_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+[[p2p.validators]]
+address            = "127.0.0.1:9001"
+bls_peer_id        = 1
+ed25519_public_key = "123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0"
+
+[[p2p.validators]]
+address            = "127.0.0.1:9002"
+bls_peer_id        = 2
+ed25519_public_key = "23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01"
+
+[[p2p.validators]]
+address            = "127.0.0.1:9003"
+bls_peer_id        = 3
+ed25519_public_key = "3456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012"
+
+[[p2p.validators]]
+address            = "127.0.0.1:9004"
+bls_peer_id        = 4
+ed25519_public_key = "456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123"
+
+[[p2p.validators]]
+address            = "127.0.0.1:9005"
+bls_peer_id        = 5
+ed25519_public_key = "56789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234"
+
+[rpc]
+f                      = 1
+listen_addr            = "0.0.0.0:50051"
+max_concurrent_streams = 100
+network                = "local"
+peer_id                = 0
+request_timeout_secs   = 30
+total_validators       = 6
+
+[identity]
+bls_secret_key_path     = "/etc/kairos/keys/bls.key"
+ed25519_secret_key_path = "/etc/kairos/keys/ed25519.key"
+
+[metrics]
+enabled        = true
+listen_address = "0.0.0.0:9090"
+
+[logging]
+format = "json"
+level  = "info"

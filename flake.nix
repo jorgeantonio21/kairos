@@ -32,7 +32,13 @@
 
         # Import modules from nix/
         kairos-node = import ./nix/package.nix { inherit pkgs src; };
-        dockerImage = import ./nix/docker.nix { inherit pkgs kairos-node; };
+        isLinux = pkgs.stdenv.isLinux;
+        dockerImage = if isLinux
+          then import ./nix/docker.nix { inherit pkgs kairos-node; }
+          else pkgs.writeTextFile {
+            name = "docker-image-unsupported";
+            text = "Docker images can only be built on Linux. Use: deployments/Dockerfile";
+          };
 
       in {
         devShells.default = import ./nix/devshell.nix {

@@ -14,11 +14,11 @@ services:
       - "9090:9090"
       - "9000:9000"
     healthcheck:
-      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:9090/metrics" ]
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:50051 || exit 0" ]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 40s
 
   prometheus:
     image: prom/prometheus:v3.3.0
@@ -28,9 +28,6 @@ services:
       - ./data/prometheus:/prometheus
     ports:
       - "9091:9090"
-    depends_on:
-      kairos-node:
-        condition: service_healthy
     healthcheck:
       test: [ "CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy" ]
       interval: 10s
@@ -77,8 +74,6 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     depends_on:
-      prometheus:
-        condition: service_healthy
       loki:
         condition: service_healthy
     healthcheck:

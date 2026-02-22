@@ -32,8 +32,11 @@ kairos-node (stdout → JSON logs, :9090 metrics)
 ## Quick Start
 
 ```bash
-# From the repository root — build the Docker image via Nix and load it
+# Option A: Build via Nix (Linux only — used in CI)
 nix build .#dockerImage && docker load < result
+
+# Option B: Build via Dockerfile (works on macOS and Linux)
+docker build -f deployments/Dockerfile -t kairos-node:latest .
 
 # Start the stack
 docker compose -f deployments/docker-compose.yml up
@@ -419,6 +422,7 @@ Grafana is at **<http://localhost:3000>** and shows metrics from all 6 nodes.
 deployments/
 ├── README.md                              ← you are here
 ├── docker-compose.yml                     ← single-node stack
+├── Dockerfile                             ← fallback image build (macOS/Linux)
 ├── config/
 │   └── node.toml                          ← validator node configuration
 ├── prometheus/

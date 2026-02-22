@@ -516,7 +516,9 @@ for full documentation.
 
 - **Single node:** `docker compose -f deployments/docker-compose.yml up`
 - **6-validator localnet:** `cd deployments/localnet && docker compose up`
-- **Docker images:** built via Nix (`nix build .#dockerImage`) for minimal, reproducible images
+- **Docker images:**
+  - **Linux/CI:** `nix build .#dockerImage && docker load < result` (minimal ~50MB image)
+  - **macOS:** `docker build -f deployments/Dockerfile -t kairos-node:latest .`
 - **Releases:** tagged versions are pushed to GHCR (`ghcr.io/jorgeantonio21/kairos/node`)
 
 ### Deployment Roadmap

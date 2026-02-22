@@ -52,6 +52,7 @@ impl RpcGrpcServer {
             block_events: None,
             consensus_events: None,
             tx_events: None,
+            prometheus_handle: None,
             logger,
         };
 

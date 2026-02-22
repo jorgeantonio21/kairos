@@ -1,0 +1,8 @@
+target/
+.git/
+.direnv/
+result
+deployments/data/
+deployments/localnet/data/
+deployments/localnet/config/nodes/
+*.tar.gz

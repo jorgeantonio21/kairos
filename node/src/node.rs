@@ -86,11 +86,13 @@ use consensus::consensus::ConsensusMessage;
 use consensus::consensus_manager::config::ConsensusConfig;
 use consensus::consensus_manager::consensus_engine::ConsensusEngine;
 use consensus::mempool::MempoolService;
+use consensus::metrics::ConsensusMetrics;
 use consensus::state::transaction::Transaction;
 use consensus::storage::store::ConsensusStore;
 use consensus::validation::PendingStateWriter;
 use grpc_client::config::RpcConfig;
 use grpc_client::server::{RpcContext, RpcServer};
+use metrics_exporter_prometheus::PrometheusHandle;
 use p2p::ValidatorIdentity;
 use p2p::config::P2PConfig;
 use p2p::service::{P2PHandle, spawn as spawn_p2p};
@@ -191,6 +193,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
         rpc_config: RpcConfig,
         identity: ValidatorIdentity,
         storage_path: P,
+        prometheus_handle: Option<PrometheusHandle>,
         logger: Logger,
     ) -> Result<Self> {
         let peer_id = identity.peer_id();
@@ -278,6 +281,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             Arc::clone(&p2p_handle.tx_broadcast_notify),
             Arc::clone(&grpc_tx_queue),
             Arc::clone(&p2p_ready),
+            prometheus_handle,
             logger.new(o!("component" => "grpc")),
         );
 
@@ -306,7 +310,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             .context("Failed to spawn gRPC server thread")?;
         slog::debug!(logger, "gRPC server spawned"; "addr" => %grpc_addr);
 
-        // 10. Spawn Consensus Engine
+        // 10. Create consensus metrics
+        let metrics = Arc::new(ConsensusMetrics::new());
+
+        // 11. Spawn Consensus Engine
         let consensus_engine = ConsensusEngine::<N, F, M_SIZE>::new(
             consensus_config,
             peer_id,
@@ -319,6 +326,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             mempool_channels.finalized_producer,
             persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            metrics,
             logger.new(o!("component" => "consensus")),
         )
         .context("Failed to create consensus engine")?;
@@ -374,6 +382,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
     pub fn from_config(
         config: NodeConfig,
         identity: ValidatorIdentity,
+        prometheus_handle: Option<PrometheusHandle>,
         logger: Logger,
     ) -> Result<Self> {
         Self::spawn(
@@ -382,6 +391,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             config.rpc,
             identity,
             &config.storage.path,
+            prometheus_handle,
             logger,
         )
     }
@@ -496,6 +506,7 @@ pub struct ValidatorNodeBuilder<const N: usize, const F: usize, const M_SIZE: us
     rpc_config: Option<RpcConfig>,
     identity: Option<ValidatorIdentity>,
     storage_path: Option<String>,
+    prometheus_handle: Option<PrometheusHandle>,
     logger: Option<Logger>,
 }
 
@@ -516,6 +527,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNodeBuilder<N
             rpc_config: None,
             identity: None,
             storage_path: None,
+            prometheus_handle: None,
             logger: None,
         }
     }
@@ -547,6 +559,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNodeBuilder<N
     /// Sets the storage path.
     pub fn with_storage_path(mut self, path: impl Into<String>) -> Self {
         self.storage_path = Some(path.into());
+        self
+    }
+
+    /// Sets the Prometheus metrics handle.
+    pub fn with_prometheus_handle(mut self, handle: PrometheusHandle) -> Self {
+        self.prometheus_handle = Some(handle);
         self
     }
 
@@ -587,6 +605,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNodeBuilder<N
             rpc_config,
             identity,
             &storage_path,
+            self.prometheus_handle,
             logger,
         )
     }

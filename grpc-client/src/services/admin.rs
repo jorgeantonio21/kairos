@@ -23,18 +23,21 @@ impl AdminServiceImpl {
 
 #[tonic::async_trait]
 impl AdminService for AdminServiceImpl {
-    /// Get detailed node metrics in Prometheus format.
+    /// Get detailed node metrics in Prometheus text format.
     ///
-    /// NOTE: Currently returns empty metrics. Full implementation requires
-    /// integration with a metrics registry (e.g., prometheus crate).
+    /// Returns all registered metrics from the Prometheus recorder. If metrics
+    /// are not enabled, returns an empty string.
     async fn get_metrics(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<MetricsResponse>, Status> {
-        // TODO: Integrate with metrics registry when available
-        Ok(Response::new(MetricsResponse {
-            metrics: String::new(),
-        }))
+        let metrics = self
+            .context
+            .prometheus_handle
+            .as_ref()
+            .map(|h| h.render())
+            .unwrap_or_default();
+        Ok(Response::new(MetricsResponse { metrics }))
     }
 
     /// Get the validator set.
@@ -147,6 +150,7 @@ mod tests {
             block_events: None,
             consensus_events: None,
             tx_events: None,
+            prometheus_handle: None,
             logger: create_test_logger(),
         };
 

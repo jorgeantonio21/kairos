@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: kairos
+    static_configs:
+      - targets:
+          - validator-0:9090
+        labels:
+          instance: validator-0
+      - targets:
+          - validator-1:9090
+        labels:
+          instance: validator-1
+      - targets:
+          - validator-2:9090
+        labels:
+          instance: validator-2
+      - targets:
+          - validator-3:9090
+        labels:
+          instance: validator-3
+      - targets:
+          - validator-4:9090
+        labels:
+          instance: validator-4
+      - targets:
+          - validator-5:9090
+        labels:
+          instance: validator-5

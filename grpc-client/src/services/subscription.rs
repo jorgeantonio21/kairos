@@ -225,6 +225,7 @@ mod tests {
             block_events: Some(block_tx.clone()),
             consensus_events: Some(consensus_tx.clone()),
             tx_events: Some(tx_tx.clone()),
+            prometheus_handle: None,
             logger: create_test_logger(),
         };
 
@@ -301,6 +302,7 @@ mod tests {
             block_events: None,
             consensus_events: None,
             tx_events: None,
+            prometheus_handle: None,
             logger: create_test_logger(),
         };
 

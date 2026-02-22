@@ -21,6 +21,7 @@ use consensus::state::transaction::Transaction;
 use consensus::storage::store::ConsensusStore;
 use consensus::validation::PendingStateReader;
 use crossbeam::queue::ArrayQueue;
+use metrics_exporter_prometheus::PrometheusHandle;
 use p2p::PeerStatsReader;
 use slog::Logger;
 use tokio::sync::{Notify, broadcast};
@@ -60,6 +61,8 @@ pub struct ReadOnlyContext {
     pub consensus_events: Option<broadcast::Sender<ConsensusEvent>>,
     /// Transaction/mempool event sender for subscriptions
     pub tx_events: Option<broadcast::Sender<TransactionEvent>>,
+    /// Prometheus metrics handle (if metrics are enabled)
+    pub prometheus_handle: Option<PrometheusHandle>,
     /// Logger
     pub logger: Logger,
 }
@@ -96,6 +99,7 @@ impl RpcContext {
         p2p_tx_notify: Arc<Notify>,
         mempool_tx_queue: Arc<ArrayQueue<Transaction>>,
         p2p_ready: Arc<AtomicBool>,
+        prometheus_handle: Option<PrometheusHandle>,
         logger: Logger,
     ) -> Self {
         Self {
@@ -107,6 +111,7 @@ impl RpcContext {
                 block_events,
                 consensus_events,
                 tx_events,
+                prometheus_handle,
                 logger,
             },
             p2p_tx_queue,

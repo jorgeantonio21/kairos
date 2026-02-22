@@ -7,6 +7,7 @@ use super::{network_simulator::LocalNetwork, test_helpers::*};
 use crate::{
     consensus_manager::{config::GenesisAccount, consensus_engine::ConsensusEngine},
     crypto::transaction_crypto::{TxPublicKey, TxSecretKey},
+    metrics::ConsensusMetrics,
     state::{address::Address, transaction::Transaction},
 };
 use slog::{Drain, Level, Logger, o};
@@ -153,6 +154,7 @@ fn test_e2e_consensus_happy_path() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -539,6 +541,7 @@ fn test_e2e_consensus_continuous_load() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -920,6 +923,7 @@ fn test_e2e_consensus_with_crashed_replica() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -1414,6 +1418,7 @@ fn test_e2e_consensus_with_equivocating_leader() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -2106,6 +2111,7 @@ fn test_e2e_consensus_with_persistent_equivocating_leader() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -2723,6 +2729,7 @@ fn test_e2e_consensus_functional_blockchain() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -3272,6 +3279,7 @@ fn test_e2e_consensus_invalid_tx_rejection() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -3898,6 +3906,7 @@ fn test_e2e_consensus_with_invalid_block_from_leader() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -4247,6 +4256,7 @@ fn test_e2e_consensus_with_true_equivocation() {
             setup.finalized_producer,
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
+            Arc::new(ConsensusMetrics::new()),
             replica_logger,
         )
         .expect("Failed to create consensus engine");

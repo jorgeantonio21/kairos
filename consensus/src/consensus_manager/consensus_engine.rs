@@ -189,6 +189,7 @@ use crate::{
     },
     crypto::aggregated::{BlsPublicKey, BlsSecretKey, PeerId},
     mempool::{FinalizedNotification, ProposalRequest, ProposalResponse},
+    metrics::ConsensusMetrics,
     state::peer::PeerSet,
     validation::PendingStateWriter,
 };
@@ -242,6 +243,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
         finalized_producer: Producer<FinalizedNotification>,
         persistence_writer: PendingStateWriter,
         tick_interval: Duration,
+        metrics: Arc<ConsensusMetrics>,
         logger: slog::Logger,
     ) -> Result<Self> {
         // Create shutdown signal
@@ -293,6 +295,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
             .with_tick_interval(tick_interval)
             .with_shutdown_signal(shutdown_signal.clone())
             .with_broadcast_notify(broadcast_notify)
+            .with_metrics(metrics)
             .with_logger(logger.clone())
             .build()
             .context("Failed to build ConsensusStateMachine")?;
@@ -426,6 +429,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> Drop for ConsensusEngi
 mod tests {
     use super::*;
     use crate::crypto::aggregated::BlsSecretKey;
+    use crate::metrics::ConsensusMetrics;
     use crate::state::peer::PeerSet;
     use crate::storage::store::ConsensusStore;
     use ark_serialize::CanonicalSerialize;
@@ -515,6 +519,7 @@ mod tests {
             finalized_producer,
             pending_state_writer,
             tick_interval,
+            Arc::new(ConsensusMetrics::new()),
             logger,
         );
 
@@ -588,6 +593,7 @@ mod tests {
             finalized_producer,
             pending_state_writer,
             tick_interval,
+            Arc::new(ConsensusMetrics::new()),
             logger,
         )
         .unwrap();

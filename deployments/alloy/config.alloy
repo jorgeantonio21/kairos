@@ -1,0 +1,37 @@
+// Discover all running Docker containers
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Collect logs from discovered containers
+loki.source.docker "default" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.docker.containers.targets
+  labels     = { "job" = "kairos" }
+  forward_to = [loki.process.docker.receiver]
+}
+
+// Parse the slog JSON payload and extract the level field as a label
+loki.process "docker" {
+  stage.json {
+    expressions = {
+      level = "level",
+      msg   = "msg",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+
+  forward_to = [loki.write.local.receiver]
+}
+
+// Ship processed logs to Loki
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

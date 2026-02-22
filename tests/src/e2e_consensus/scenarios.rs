@@ -21,6 +21,7 @@ use consensus::{
     },
     crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
     mempool::MempoolService,
+    metrics::ConsensusMetrics,
     state::{address::Address, block::Block, peer::PeerSet, transaction::Transaction},
     storage::store::ConsensusStore,
     validation::PendingStateWriter,
@@ -287,6 +288,7 @@ fn create_node_setup<const N: usize, const F: usize, const M_SIZE: usize>(
         mempool_channels.finalized_producer,
         persistence_writer,
         DEFAULT_TICK_INTERVAL,
+        Arc::new(ConsensusMetrics::new()),
         logger.new(o!("component" => "consensus")),
     )
     .expect("Failed to create consensus engine");
@@ -311,6 +313,7 @@ fn create_node_setup<const N: usize, const F: usize, const M_SIZE: usize>(
         Arc::clone(&p2p_handle.tx_broadcast_notify), // P2P broadcast notify
         mempool_tx_queue,                            // Shared mempool queue (direct to mempool)
         Arc::clone(&p2p_ready),
+        None, // prometheus_handle
         logger.new(o!("component" => "grpc")),
     );
 
@@ -581,13 +584,17 @@ fn test_multi_node_happy_path() {
         );
 
         // Phase 6: Wait for consensus to progress through multiple views
+        let test_duration_secs: u64 = std::env::var("E2E_DURATION_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
         slog::info!(
             logger,
             "Phase 6: Waiting for consensus to progress";
-            "duration_secs" => 30,
+            "duration_secs" => test_duration_secs,
         );
 
-        let test_duration = Duration::from_secs(30);
+        let test_duration = Duration::from_secs(test_duration_secs);
         let check_interval = Duration::from_secs(5);
         let start = std::time::Instant::now();
 
@@ -928,7 +935,11 @@ fn test_multi_node_continuous_load() {
         slog::info!(logger, "All nodes bootstrapped successfully");
 
         // Phase 5: Continuous Load
-        let test_duration = Duration::from_secs(30);
+        let test_duration_secs: u64 = std::env::var("E2E_DURATION_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        let test_duration = Duration::from_secs(test_duration_secs);
         let tx_interval = Duration::from_millis(100);
         let check_interval = Duration::from_secs(5);
 

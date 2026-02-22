@@ -1,0 +1,160 @@
+# Kairos 6-Validator Local Network
+#
+# Start with:
+#   cd deployments/localnet
+#   ./generate-keys.sh
+#   nix build ../../#dockerImage && docker load < ../../result
+#   docker compose up
+#
+# This runs 6 validator nodes + the full observability stack.
+
+x-validator: &validator-defaults
+  image: kairos-node:latest
+  healthcheck:
+    test: [ "CMD", "wget", "-q", "--spider", "http://localhost:9090/metrics" ]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+    start_period: 30s
+
+services:
+  # ── Validators ──────────────────────────────────────────────────
+  validator-0:
+    <<: *validator-defaults
+    command: [ "run", "--config", "/etc/kairos/node.toml" ]
+    volumes:
+      - ./config/nodes/validator-0/node.toml:/etc/kairos/node.toml:ro
+      - ./config/nodes/validator-0/keys:/etc/kairos/keys:ro
+      - ./data/validator-0:/data
+    ports:
+      - "50051:50051"
+      - "9090:9090"
+      - "9000:9000"
+
+  validator-1:
+    <<: *validator-defaults
+    command: [ "run", "--config", "/etc/kairos/node.toml" ]
+    volumes:
+      - ./config/nodes/validator-1/node.toml:/etc/kairos/node.toml:ro
+      - ./config/nodes/validator-1/keys:/etc/kairos/keys:ro
+      - ./data/validator-1:/data
+    ports:
+      - "50052:50051"
+      - "9092:9090"
+      - "9001:9000"
+
+  validator-2:
+    <<: *validator-defaults
+    command: [ "run", "--config", "/etc/kairos/node.toml" ]
+    volumes:
+      - ./config/nodes/validator-2/node.toml:/etc/kairos/node.toml:ro
+      - ./config/nodes/validator-2/keys:/etc/kairos/keys:ro
+      - ./data/validator-2:/data
+    ports:
+      - "50053:50051"
+      - "9093:9090"
+      - "9002:9000"
+
+  validator-3:
+    <<: *validator-defaults
+    command: [ "run", "--config", "/etc/kairos/node.toml" ]
+    volumes:
+      - ./config/nodes/validator-3/node.toml:/etc/kairos/node.toml:ro
+      - ./config/nodes/validator-3/keys:/etc/kairos/keys:ro
+      - ./data/validator-3:/data
+    ports:
+      - "50054:50051"
+      - "9094:9090"
+      - "9003:9000"
+
+  validator-4:
+    <<: *validator-defaults
+    command: [ "run", "--config", "/etc/kairos/node.toml" ]
+    volumes:
+      - ./config/nodes/validator-4/node.toml:/etc/kairos/node.toml:ro
+      - ./config/nodes/validator-4/keys:/etc/kairos/keys:ro
+      - ./data/validator-4:/data
+    ports:
+      - "50055:50051"
+      - "9095:9090"
+      - "9004:9000"
+
+  validator-5:
+    <<: *validator-defaults
+    command: [ "run", "--config", "/etc/kairos/node.toml" ]
+    volumes:
+      - ./config/nodes/validator-5/node.toml:/etc/kairos/node.toml:ro
+      - ./config/nodes/validator-5/keys:/etc/kairos/keys:ro
+      - ./data/validator-5:/data
+    ports:
+      - "50056:50051"
+      - "9096:9090"
+      - "9005:9000"
+
+  # ── Observability ───────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./data/prometheus:/prometheus
+    ports:
+      - "9091:9090"
+    depends_on:
+      validator-0:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  loki:
+    image: grafana/loki:3.4.2
+    volumes:
+      - ../loki/loki.yml:/etc/loki/local-config.yaml:ro
+      - ./data/loki:/loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3100/ready" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  alloy:
+    image: grafana/alloy:v1.8.3
+    volumes:
+      - ../alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./data/grafana:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3

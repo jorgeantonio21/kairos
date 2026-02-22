@@ -1,0 +1,99 @@
+groups:
+  - name: kairos-consensus
+    interval: 15s
+    rules:
+      # ── Liveness ──────────────────────────────────────────────
+      - alert: ConsensusStalled
+        expr: consensus_views_since_finalization > 10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Consensus is stalled on {{ $labels.instance }}"
+          description: >
+            View gap is {{ $value }} (threshold: 10).
+            No blocks have been finalized for over 2 minutes.
+
+      - alert: NodeDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kairos node {{ $labels.instance }} is down"
+          description: "Prometheus has been unable to scrape {{ $labels.instance }} for 1 minute."
+
+      # ── Nullification ─────────────────────────────────────────
+      - alert: HighNullificationRate
+        expr: rate(consensus_nullifications_total[5m]) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High nullification rate on {{ $labels.instance }}"
+          description: >
+            Nullification rate is {{ $value | printf "%.2f" }}/s.
+            Possible network partitions or faulty leaders.
+
+      - alert: CascadeNullifications
+        expr: rate(consensus_cascade_nullifications_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cascade nullifications detected on {{ $labels.instance }}"
+          description: "Multiple consecutive views are being nullified."
+
+      # ── Finalization ──────────────────────────────────────────
+      - alert: HighFinalizationLatency
+        expr: histogram_quantile(0.99, rate(consensus_finalization_latency_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High finalization latency on {{ $labels.instance }}"
+          description: "p99 finalization latency is {{ $value | printf \"%.2f\" }}s (threshold: 5s)."
+
+      - alert: BlockValidationFailures
+        expr: rate(consensus_blocks_validated_total{result="failure"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Block validation failures on {{ $labels.instance }}"
+          description: "Invalid blocks are being received — possible Byzantine leader."
+
+      # ── Backpressure ──────────────────────────────────────────
+      - alert: MempoolBackpressure
+        expr: consensus_mempool_pending_count > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mempool backpressure on {{ $labels.instance }}"
+          description: "{{ $value }} pending transactions (threshold: 5000)."
+
+      - alert: RingBufferSaturation
+        expr: consensus_ring_buffer_utilization > 0.9
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ring buffer saturated on {{ $labels.instance }}"
+          description: >
+            Channel {{ $labels.channel }} is at {{ $value | printf "%.0f" }}% utilization.
+            Messages may be dropped.
+
+      # ── Voting ────────────────────────────────────────────────
+      - alert: HighInvalidVoteRate
+        expr: >
+          rate(consensus_votes_received_total{result="invalid"}[5m])
+          /
+          (rate(consensus_votes_received_total{result="valid"}[5m]) + 0.001)
+          > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High invalid vote rate on {{ $labels.instance }}"
+          description: "Over 10% of received votes are invalid."

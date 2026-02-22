@@ -470,3 +470,37 @@ Restart the stack for changes to take effect:
 docker compose -f deployments/docker-compose.yml restart prometheus
 ```
 
+## Troubleshooting
+
+### Loki / Prometheus crash with "permission denied" on first start
+
+On a fresh clone (or after deleting `deployments/data/`), you may see errors
+like:
+
+```
+loki-1       | mkdir /loki/rules: permission denied
+prometheus-1 | open /prometheus/queries.active: permission denied
+```
+
+**Cause:** Docker auto-creates the bind-mounted `data/` subdirectories as
+`root:root` with `755` permissions. However, **Loki**, **Prometheus**, and
+**Grafana** run as non-root users inside their containers, so they cannot
+write to those directories.
+
+**Fix:** Create the data directories with open permissions before starting the
+stack:
+
+```bash
+mkdir -p deployments/data/{loki,prometheus,grafana,node}
+chmod -R 777 deployments/data
+docker compose -f deployments/docker-compose.yml up
+```
+
+For the multi-node localnet setup:
+
+```bash
+mkdir -p deployments/localnet/data/{validator-{0..5},loki,prometheus,grafana}
+chmod -R 777 deployments/localnet/data
+```
+
+This only needs to be done **once** — the directories persist across restarts.

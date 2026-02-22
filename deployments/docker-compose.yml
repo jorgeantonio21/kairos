@@ -74,6 +74,8 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     depends_on:
+      prometheus:
+        condition: service_healthy
       loki:
         condition: service_healthy
     healthcheck:

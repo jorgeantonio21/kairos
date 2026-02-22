@@ -52,7 +52,7 @@ peers = [
 # Genesis accounts with initial token balances.
 # These accounts are created at network genesis with the specified balances.
 [[consensus.genesis_accounts]]
-balance    = 1000000000      # Initial balance in base units
+balance    = 1000000000                                                         # Initial balance in base units
 public_key = "9af8324634d5858251ace90e8a10a1d7fd96c4264bfd3108e74ec88c01f2de0c" # Ed25519 public key (hex)
 
 [[consensus.genesis_accounts]]

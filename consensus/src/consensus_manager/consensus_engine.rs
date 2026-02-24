@@ -179,6 +179,8 @@ use std::{
 use anyhow::{Context, Result};
 use rtrb::{Consumer, Producer};
 
+use visualizer::DashboardMetrics;
+
 use crate::{
     consensus::ConsensusMessage,
     consensus_manager::{
@@ -244,6 +246,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
         persistence_writer: PendingStateWriter,
         tick_interval: Duration,
         metrics: Arc<ConsensusMetrics>,
+        dashboard: Option<Arc<DashboardMetrics>>,
         logger: slog::Logger,
     ) -> Result<Self> {
         // Create shutdown signal
@@ -296,6 +299,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
             .with_shutdown_signal(shutdown_signal.clone())
             .with_broadcast_notify(broadcast_notify)
             .with_metrics(metrics)
+            .with_dashboard(dashboard)
             .with_logger(logger.clone())
             .build()
             .context("Failed to build ConsensusStateMachine")?;
@@ -520,6 +524,7 @@ mod tests {
             pending_state_writer,
             tick_interval,
             Arc::new(ConsensusMetrics::new()),
+            None,
             logger,
         );
 
@@ -594,6 +599,7 @@ mod tests {
             pending_state_writer,
             tick_interval,
             Arc::new(ConsensusMetrics::new()),
+            None,
             logger,
         )
         .unwrap();

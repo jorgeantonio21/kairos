@@ -427,6 +427,7 @@ fn create_gossip_node(
                 persistence_writer,
                 DEFAULT_TICK_INTERVAL,
                 Arc::new(ConsensusMetrics::new()),
+                None,
                 logger.new(o!("component" => "consensus")),
             )
             .expect("Failed to create consensus engine"),

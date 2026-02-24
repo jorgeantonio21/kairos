@@ -209,6 +209,7 @@ use std::{
 
 use anyhow::Result;
 use rtrb::{Consumer, Producer};
+use visualizer::DashboardMetrics;
 
 use crate::{
     consensus::ConsensusMessage,
@@ -273,6 +274,9 @@ pub struct ConsensusStateMachine<const N: usize, const F: usize, const M_SIZE: u
     /// Consensus metrics handles
     metrics: Arc<ConsensusMetrics>,
 
+    /// Visualizer dashboard metrics (None when visualizer is disabled)
+    dashboard: Option<Arc<DashboardMetrics>>,
+
     /// Logger for logging events
     logger: slog::Logger,
 }
@@ -291,6 +295,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         shutdown_signal: Arc<AtomicBool>,
         broadcast_notify: Arc<tokio::sync::Notify>,
         metrics: Arc<ConsensusMetrics>,
+        dashboard: Option<Arc<DashboardMetrics>>,
         logger: slog::Logger,
     ) -> Result<Self> {
         Ok(Self {
@@ -306,6 +311,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             shutdown_signal,
             broadcast_notify,
             metrics,
+            dashboard,
             logger,
         })
     }
@@ -404,6 +410,21 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
 
     /// Handles any incoming consensus messages
     fn handle_consensus_message(&mut self, message: ConsensusMessage<N, F, M_SIZE>) -> Result<()> {
+        // Track vote/nullify counts for dashboard before processing
+        if let Some(ref db) = self.dashboard {
+            match &message {
+                ConsensusMessage::Vote(v) => {
+                    db.slot(v.view).vote_count.fetch_add(1, Ordering::Relaxed);
+                }
+                ConsensusMessage::Nullify(n) => {
+                    db.slot(n.view)
+                        .nullify_count
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+        }
+
         let event = self.view_manager.process_consensus_msg(message.clone())?;
 
         if let ViewProgressEvent::ShouldUpdateView { new_view, .. } = event {
@@ -453,6 +474,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 should_forward_m_notarization,
             } => {
                 self.metrics.m_notarizations_total.increment(1);
+                if let Some(ref db) = self.dashboard {
+                    db.slot(view)
+                        .m_notarized_at
+                        .store(visualizer::epoch_ms(), Ordering::Relaxed);
+                    db.total_m_notarizations.fetch_add(1, Ordering::Relaxed);
+                }
                 // 1. Create and broadcast the M-notarization
                 self.create_and_broadcast_m_notarization(
                     view,
@@ -477,6 +504,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             ViewProgressEvent::ShouldFinalize { view, block_hash } => {
                 self.metrics.blocks_finalized_total.increment(1);
                 self.metrics.l_notarizations_total.increment(1);
+                if let Some(ref db) = self.dashboard {
+                    db.slot(view)
+                        .l_notarized_at
+                        .store(visualizer::epoch_ms(), Ordering::Relaxed);
+                    db.total_l_notarizations.fetch_add(1, Ordering::Relaxed);
+                    db.finalized_view.store(view, Ordering::Relaxed);
+                }
                 self.finalize_view(view, block_hash)
             }
             ViewProgressEvent::ShouldNullify { view } => {
@@ -485,6 +519,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             }
             ViewProgressEvent::ShouldBroadcastNullification { view } => {
                 self.metrics.nullifications_total.increment(1);
+                if let Some(ref db) = self.dashboard {
+                    db.slot(view)
+                        .nullified_at
+                        .store(visualizer::epoch_ms(), Ordering::Relaxed);
+                    db.total_nullifications.fetch_add(1, Ordering::Relaxed);
+                }
                 self.broadcast_nullification(view)
             }
             ViewProgressEvent::ShouldVoteAndMNotarize {
@@ -494,6 +534,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             } => {
                 self.metrics.votes_sent_total.increment(1);
                 self.metrics.m_notarizations_total.increment(1);
+                if let Some(ref db) = self.dashboard {
+                    db.slot(view)
+                        .m_notarized_at
+                        .store(visualizer::epoch_ms(), Ordering::Relaxed);
+                    db.total_m_notarizations.fetch_add(1, Ordering::Relaxed);
+                }
                 // 1. Vote for the block and create and broadcast the M-notarization
                 self.vote_for_block(view, block_hash)?;
 
@@ -519,6 +565,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 self.metrics.votes_sent_total.increment(1);
                 self.metrics.blocks_finalized_total.increment(1);
                 self.metrics.l_notarizations_total.increment(1);
+                if let Some(ref db) = self.dashboard {
+                    db.slot(view)
+                        .l_notarized_at
+                        .store(visualizer::epoch_ms(), Ordering::Relaxed);
+                    db.total_l_notarizations.fetch_add(1, Ordering::Relaxed);
+                    db.finalized_view.store(view, Ordering::Relaxed);
+                }
                 self.vote_for_block(view, block_hash)?;
                 self.finalize_view(view, block_hash)
             }
@@ -529,6 +582,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 should_forward_m_notarization,
             } => {
                 self.metrics.current_view.set(new_view as f64);
+                if let Some(ref db) = self.dashboard {
+                    db.slot(new_view - 1)
+                        .m_notarized_at
+                        .store(visualizer::epoch_ms(), Ordering::Relaxed);
+                    db.init_view(new_view, leader);
+                }
                 slog::info!(
                     self.logger,
                     "Progressed to view {} with M-notarization (block: {:?}, leader: {:?})",
@@ -554,6 +613,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 self.metrics.votes_sent_total.increment(1);
                 self.metrics.m_notarizations_total.increment(1);
                 self.metrics.current_view.set(new_view as f64);
+                if let Some(ref db) = self.dashboard {
+                    db.slot(old_view)
+                        .m_notarized_at
+                        .store(visualizer::epoch_ms(), Ordering::Relaxed);
+                    db.total_m_notarizations.fetch_add(1, Ordering::Relaxed);
+                    db.init_view(new_view, leader);
+                }
                 self.vote_for_block(old_view, block_hash)?;
                 self.create_and_broadcast_m_notarization(
                     old_view, // NOTE: The M-notarization is for the previous view (new_view - 1)
@@ -570,6 +636,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 should_broadcast_nullification,
             } => {
                 self.metrics.current_view.set(new_view as f64);
+                if let Some(ref db) = self.dashboard {
+                    db.slot(new_view - 1)
+                        .nullified_at
+                        .store(visualizer::epoch_ms(), Ordering::Relaxed);
+                    db.total_nullifications.fetch_add(1, Ordering::Relaxed);
+                    db.init_view(new_view, leader);
+                }
                 if should_broadcast_nullification {
                     self.metrics.nullifications_total.increment(1);
                     self.broadcast_nullification(new_view - 1)?; // NOTE: The nullification is for the previous view (new_view - 1)
@@ -600,6 +673,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 should_broadcast_nullification,
             } => {
                 self.metrics.cascade_nullifications_total.increment(1);
+                if let Some(ref db) = self.dashboard {
+                    db.total_cascade_nullifications
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 let current_view = self.view_manager.current_view_number();
 
                 slog::warn!(
@@ -787,6 +864,17 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
 
         // Update the block with the true leader signature.
         block.leader_signature = leader_signature.clone();
+
+        // Update dashboard with block proposal info
+        if let Some(ref db) = self.dashboard {
+            let slot = db.slot(view);
+            let hash_lo = u64::from_le_bytes(block_hash[..8].try_into().unwrap());
+            let hash_hi = u64::from_le_bytes(block_hash[8..16].try_into().unwrap());
+            slot.block_hash_lo.store(hash_lo, Ordering::Relaxed);
+            slot.block_hash_hi.store(hash_hi, Ordering::Relaxed);
+            slot.tx_count
+                .store(block.transactions.len() as u64, Ordering::Relaxed);
+        }
 
         // Broadcast the block proposal to the network layer (to be received by other replicas)
         self.broadcast_consensus_message(ConsensusMessage::BlockProposal(block.clone()))?;
@@ -1219,6 +1307,7 @@ pub struct ConsensusStateMachineBuilder<const N: usize, const F: usize, const M_
     tick_interval: Option<Duration>,
     shutdown_signal: Option<Arc<AtomicBool>>,
     metrics: Option<Arc<ConsensusMetrics>>,
+    dashboard: Option<Arc<DashboardMetrics>>,
     logger: Option<slog::Logger>,
     message_consumer: Option<Consumer<ConsensusMessage<N, F, M_SIZE>>>,
     broadcast_producer: Option<Producer<ConsensusMessage<N, F, M_SIZE>>>,
@@ -1246,6 +1335,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
             tick_interval: None,
             shutdown_signal: None,
             metrics: None,
+            dashboard: None,
             logger: None,
             message_consumer: None,
             broadcast_producer: None,
@@ -1278,6 +1368,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
 
     pub fn with_metrics(mut self, metrics: Arc<ConsensusMetrics>) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    pub fn with_dashboard(mut self, dashboard: Option<Arc<DashboardMetrics>>) -> Self {
+        self.dashboard = dashboard;
         self
     }
 
@@ -1355,6 +1450,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
                 .ok_or_else(|| anyhow::anyhow!("Broadcast notify not set"))?,
             self.metrics
                 .unwrap_or_else(|| Arc::new(ConsensusMetrics::new())),
+            self.dashboard,
             self.logger
                 .ok_or_else(|| anyhow::anyhow!("Logger not set"))?,
         )
@@ -1549,6 +1645,7 @@ mod tests {
                 shutdown,
                 Arc::new(tokio::sync::Notify::new()),
                 Arc::new(ConsensusMetrics::new()),
+                None,
                 logger,
             )
             .unwrap();

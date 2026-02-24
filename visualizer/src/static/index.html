@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kairos Consensus Visualizer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="title-bar">
+    <h1>Kairos Consensus Visualizer</h1>
+    <div class="connection-status" id="connection-status">Connecting...</div>
+  </header>
+
+  <nav class="tab-nav" id="tab-nav">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="timeline">Consensus Timeline</button>
+    <button class="tab-btn" data-tab="blocks">Blocks</button>
+    <button class="tab-btn" data-tab="notarizations">Notarizations</button>
+    <button class="tab-btn" data-tab="logs">Logs</button>
+  </nav>
+
+  <main class="tab-content">
+    <section class="tab-panel active" id="panel-overview">
+      <div class="overview-header">
+        <div class="big-stat">
+          <span class="big-stat-label">Current View</span>
+          <span class="big-stat-value" id="ov-current-view">--</span>
+        </div>
+        <div class="big-stat">
+          <span class="big-stat-label">Finalized View</span>
+          <span class="big-stat-value finalized" id="ov-finalized-view">--</span>
+        </div>
+        <div class="big-stat">
+          <span class="big-stat-label">Validators (N)</span>
+          <span class="big-stat-value" id="ov-node-n">--</span>
+        </div>
+        <div class="big-stat">
+          <span class="big-stat-label">Fault Tolerance (F)</span>
+          <span class="big-stat-value" id="ov-node-f">--</span>
+        </div>
+      </div>
+
+      <h2 class="section-title">Recent Views</h2>
+      <div class="view-strip" id="ov-view-strip"></div>
+      <div class="view-strip-legend">
+        <span class="legend-item"><span class="legend-box bg-l-notarized"></span>L-Notarized</span>
+        <span class="legend-item"><span class="legend-box bg-m-notarized"></span>M-Notarized</span>
+        <span class="legend-item"><span class="legend-box bg-nullified"></span>Nullified</span>
+        <span class="legend-item"><span class="legend-box bg-cascade"></span>Cascade Nullified</span>
+        <span class="legend-item"><span class="legend-box bg-in-progress"></span>In Progress</span>
+      </div>
+
+      <h2 class="section-title">Totals</h2>
+      <div class="totals-grid">
+        <div class="total-card">
+          <span class="total-value" id="ov-total-m">0</span>
+          <span class="total-label">M-Notarizations</span>
+        </div>
+        <div class="total-card">
+          <span class="total-value finalized" id="ov-total-l">0</span>
+          <span class="total-label">L-Notarizations</span>
+        </div>
+        <div class="total-card">
+          <span class="total-value nullified" id="ov-total-null">0</span>
+          <span class="total-label">Nullifications</span>
+        </div>
+        <div class="total-card">
+          <span class="total-value cascade" id="ov-total-cascade">0</span>
+          <span class="total-label">Cascade Nullifications</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-timeline">
+      <h2 class="section-title">Consensus Timeline</h2>
+      <div class="timeline-container" id="timeline-container"></div>
+    </section>
+
+    <section class="tab-panel" id="panel-blocks">
+      <h2 class="section-title">Proposed Blocks</h2>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>View</th>
+              <th>Leader</th>
+              <th>Block Hash</th>
+              <th>Tx Count</th>
+              <th>Status</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody id="blocks-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-notarizations">
+      <div class="notarization-sections">
+        <div class="notarization-section">
+          <h2 class="section-title m-notarized-text">M-Notarizations</h2>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>View</th>
+                  <th>Block Hash</th>
+                  <th>Vote Count</th>
+                  <th>Timestamp</th>
+                </tr>
+              </thead>
+              <tbody id="m-not-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="notarization-section">
+          <h2 class="section-title l-notarized-text">L-Notarizations</h2>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>View</th>
+                  <th>Block Hash</th>
+                  <th>Vote Count</th>
+                  <th>Timestamp</th>
+                </tr>
+              </thead>
+              <tbody id="l-not-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="notarization-section">
+          <h2 class="section-title nullified-text">Nullifications</h2>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>View</th>
+                  <th>Nullify Count</th>
+                  <th>Timestamp</th>
+                </tr>
+              </thead>
+              <tbody id="null-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-logs">
+      <div class="log-header">
+        <h2 class="section-title">Event Log</h2>
+        <button class="log-toggle-btn" id="log-auto-scroll-btn">Auto-scroll: ON</button>
+      </div>
+      <div class="log-container" id="log-container"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

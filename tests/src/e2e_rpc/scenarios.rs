@@ -245,6 +245,7 @@ fn create_validator_node_setup<const N: usize, const F: usize, const M_SIZE: usi
         persistence_writer,
         DEFAULT_TICK_INTERVAL,
         Arc::new(ConsensusMetrics::new()),
+        None,
         logger.new(o!("component" => "consensus")),
     )
     .expect("Failed to create consensus engine");

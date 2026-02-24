@@ -96,6 +96,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use p2p::ValidatorIdentity;
 use p2p::config::P2PConfig;
 use p2p::service::{P2PHandle, spawn as spawn_p2p};
+use visualizer::DashboardMetrics;
 
 use crate::config::NodeConfig;
 
@@ -191,6 +192,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
         consensus_config: ConsensusConfig,
         p2p_config: P2PConfig,
         rpc_config: RpcConfig,
+        visualizer_config: crate::config::VisualizerConfig,
         identity: ValidatorIdentity,
         storage_path: P,
         prometheus_handle: Option<PrometheusHandle>,
@@ -313,6 +315,38 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
         // 10. Create consensus metrics
         let metrics = Arc::new(ConsensusMetrics::new());
 
+        // 10b. Create dashboard and spawn visualizer server (if enabled)
+        let dashboard = if visualizer_config.enabled {
+            let db = Arc::new(DashboardMetrics::new());
+            db.node_n.store(
+                consensus_config.n as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            db.node_f.store(
+                consensus_config.f as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            let db_clone = Arc::clone(&db);
+            let viz_addr = visualizer_config.listen_address;
+            let viz_logger = logger.new(o!("component" => "visualizer"));
+            std::thread::Builder::new()
+                .name("visualizer".into())
+                .spawn(move || {
+                    let rt = tokio::runtime::Runtime::new()
+                        .expect("create tokio runtime for visualizer");
+                    rt.block_on(async move {
+                        if let Err(e) = visualizer::run_server(db_clone, viz_addr).await {
+                            slog::error!(viz_logger, "Visualizer server error"; "error" => %e);
+                        }
+                    });
+                })
+                .context("Failed to spawn visualizer server thread")?;
+            slog::info!(logger, "Visualizer server spawned"; "addr" => %viz_addr);
+            Some(db)
+        } else {
+            None
+        };
+
         // 11. Spawn Consensus Engine
         let consensus_engine = ConsensusEngine::<N, F, M_SIZE>::new(
             consensus_config,
@@ -327,6 +361,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             persistence_writer,
             DEFAULT_TICK_INTERVAL,
             metrics,
+            dashboard,
             logger.new(o!("component" => "consensus")),
         )
         .context("Failed to create consensus engine")?;
@@ -389,6 +424,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNode<N, F, M_
             config.consensus,
             config.p2p,
             config.rpc,
+            config.visualizer,
             identity,
             &config.storage.path,
             prometheus_handle,
@@ -504,6 +540,7 @@ pub struct ValidatorNodeBuilder<const N: usize, const F: usize, const M_SIZE: us
     consensus_config: Option<ConsensusConfig>,
     p2p_config: Option<P2PConfig>,
     rpc_config: Option<RpcConfig>,
+    visualizer_config: crate::config::VisualizerConfig,
     identity: Option<ValidatorIdentity>,
     storage_path: Option<String>,
     prometheus_handle: Option<PrometheusHandle>,
@@ -525,6 +562,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNodeBuilder<N
             consensus_config: None,
             p2p_config: None,
             rpc_config: None,
+            visualizer_config: crate::config::VisualizerConfig::default(),
             identity: None,
             storage_path: None,
             prometheus_handle: None,
@@ -547,6 +585,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNodeBuilder<N
     /// Sets the gRPC server configuration.
     pub fn with_rpc_config(mut self, config: RpcConfig) -> Self {
         self.rpc_config = Some(config);
+        self
+    }
+
+    /// Sets the visualizer configuration.
+    pub fn with_visualizer_config(mut self, config: crate::config::VisualizerConfig) -> Self {
+        self.visualizer_config = config;
         self
     }
 
@@ -603,6 +647,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ValidatorNodeBuilder<N
             consensus_config,
             p2p_config,
             rpc_config,
+            self.visualizer_config,
             identity,
             &storage_path,
             self.prometheus_handle,

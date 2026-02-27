@@ -45,6 +45,9 @@ docker compose -f deployments/docker-compose.yml up
 Wait for all five services to become healthy, then open
 **<http://localhost:3000>** in your browser.
 
+For the 6-validator localnet, use the dedicated profile in
+`deployments/localnet/` (see "Multi-Node Local Network" below).
+
 ## Accessing Grafana
 
 | Field    | Value   |
@@ -67,6 +70,9 @@ No manual import is required.
 1. Open **<http://localhost:3000>**.
 2. Navigate to the sidebar → **Dashboards** → **Kairos** folder.
 3. Click **Kairos Consensus**.
+4. Use the **Validator** dropdown:
+   - `All` = cluster-wide aggregate view
+   - `validator-0` ... `validator-5` = per-node view
 
 The dashboard shows the following panels:
 
@@ -391,30 +397,53 @@ Data survives `docker compose down` / `up` cycles. To back up or restore:
 For testing consensus with 6 validators:
 
 ```bash
-cd deployments/localnet
-
 # Generate deterministic key material
-./generate-keys.sh
+./deployments/localnet/generate-keys.sh --clean
 
-# Build and load the Docker image
-nix build ../../#dockerImage && docker load < ../../result
+# Build the node image (no Nix required)
+docker build -f deployments/Dockerfile -t kairos-node:latest .
 
-# Start the 6-validator cluster + observability
-docker compose up
+# Start 6 validators + observability + visualizers
+docker compose \
+  -f deployments/localnet/docker-compose.yml \
+  -f deployments/localnet/localnet.override.yml \
+  up -d
 ```
 
 Each validator exposes unique ports:
 
-| Validator | gRPC | Metrics | P2P |
-|-----------|------|---------|-----|
-| validator-0 | 50051 | 9090 | 9000 |
-| validator-1 | 50052 | 9092 | 9001 |
-| validator-2 | 50053 | 9093 | 9002 |
-| validator-3 | 50054 | 9094 | 9003 |
-| validator-4 | 50055 | 9095 | 9004 |
-| validator-5 | 50056 | 9096 | 9005 |
+| Validator | gRPC | Metrics | P2P | Visualizer |
+|-----------|------|---------|-----|------------|
+| validator-0 | 50051 | 9090 | 9000 | 8080 |
+| validator-1 | 50052 | 9092 | 9001 | 8081 |
+| validator-2 | 50053 | 9093 | 9002 | 8082 |
+| validator-3 | 50054 | 9094 | 9003 | 8083 |
+| validator-4 | 50055 | 9095 | 9004 | 8084 |
+| validator-5 | 50056 | 9096 | 9005 | 8085 |
 
 Grafana is at **<http://localhost:3000>** and shows metrics from all 6 nodes.
+Prometheus is at **<http://localhost:9091>**.
+
+Validator visualizers:
+
+- <http://localhost:8080>
+- <http://localhost:8081>
+- <http://localhost:8082>
+- <http://localhost:8083>
+- <http://localhost:8084>
+- <http://localhost:8085>
+
+Quick health checks:
+
+```bash
+docker compose \
+  -f deployments/localnet/docker-compose.yml \
+  -f deployments/localnet/localnet.override.yml \
+  ps
+
+curl -s http://127.0.0.1:9091/api/v1/targets \
+  | jq -r '.data.activeTargets[] | [.labels.instance,.health,.lastError] | @tsv'
+```
 
 ## Directory Layout
 
@@ -442,6 +471,7 @@ deployments/
 │           └── prometheus.yml             ← Prometheus + Loki datasources
 ├── localnet/
 │   ├── docker-compose.yml                 ← 6-validator multi-node stack
+│   ├── localnet.override.yml              ← ports + static IPs + visualizer config
 │   ├── generate-keys.sh                   ← key generation script
 │   └── prometheus.yml                     ← multi-target Prometheus config
 ├── scripts/

@@ -15,6 +15,8 @@
 //! ```
 
 use std::fs;
+use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,16 +96,18 @@ fn main() -> Result<()> {
 
             // Install Prometheus exporter if enabled
             let prometheus_handle = if node_config.metrics.enabled {
-                let builder = metrics_exporter_prometheus::PrometheusBuilder::new()
-                    .with_http_listener(node_config.metrics.listen_address);
+                let metrics_addr = node_config.metrics.listen_address;
+                let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
                 let handle = builder
                     .install_recorder()
                     .context("Failed to install Prometheus metrics exporter")?;
                 ConsensusMetrics::describe();
+                spawn_metrics_http_server(metrics_addr, handle.clone(), logger.clone())
+                    .context("Failed to start Prometheus metrics HTTP server")?;
                 slog::info!(
                     logger,
                     "Prometheus metrics exporter started";
-                    "listen_address" => %node_config.metrics.listen_address,
+                    "listen_address" => %metrics_addr,
                 );
                 Some(handle)
             } else {
@@ -449,4 +453,37 @@ fn ctrlc_handler(shutdown: Arc<AtomicBool>) {
             shutdown.store(true, Ordering::SeqCst);
         });
     });
+}
+
+fn spawn_metrics_http_server(
+    listen_addr: SocketAddr,
+    handle: PrometheusHandle,
+    logger: Logger,
+) -> Result<()> {
+    let listener = std::net::TcpListener::bind(listen_addr)
+        .with_context(|| format!("Failed to bind metrics listener at {listen_addr}"))?;
+
+    std::thread::Builder::new()
+        .name("prometheus-http".to_string())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+
+                let body = handle.render();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+
+                if let Err(e) = stream.write_all(response.as_bytes()) {
+                    slog::debug!(logger, "Failed to write metrics response"; "error" => %e);
+                }
+            }
+        })
+        .context("Failed to spawn metrics HTTP thread")?;
+
+    Ok(())
 }

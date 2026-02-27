@@ -664,54 +664,40 @@ NODE_VISUALIZER__ENABLED=true NODE_VISUALIZER__LISTEN_ADDRESS=127.0.0.1:8081 \
 
 #### Docker Compose localnet
 
-For the Docker Compose-based localnet in `deployments/localnet/`, add the visualizer port mappings and environment variables to each validator service. In `deployments/localnet/docker-compose.yml`, extend the validator definitions:
+Use the prebuilt 6-node localnet profile in `deployments/localnet/localnet.override.yml`.
+It already includes:
 
-```yaml
-services:
-  validator-0:
-    # ... existing config ...
-    ports:
-      - "50051:50051"
-      - "9090:9090"
-      - "9000:9000"
-      - "8080:8080"          # Visualizer
-    environment:
-      - NODE_VISUALIZER__ENABLED=true
-      - NODE_VISUALIZER__LISTEN_ADDRESS=0.0.0.0:8080
+- static validator container IPs (`172.30.0.10` .. `172.30.0.15`) for stable P2P addressing
+- visualizer enablement and host ports (`8080` .. `8085`)
+- per-node metrics ports (`9090`, `9092` .. `9096`)
 
-  validator-1:
-    # ... existing config ...
-    ports:
-      - "50052:50051"
-      - "9092:9090"
-      - "9001:9000"
-      - "8081:8080"          # Visualizer
-    environment:
-      - NODE_VISUALIZER__ENABLED=true
-      - NODE_VISUALIZER__LISTEN_ADDRESS=0.0.0.0:8080
-
-  # ... repeat for validator-2 through validator-5,
-  #     mapping host ports 8082-8085 to container port 8080
-```
-
-Note: inside each container the visualizer binds to `0.0.0.0:8080`. The Docker port mapping handles the host-side differentiation (`8080:8080`, `8081:8080`, etc.).
-
-After starting the stack:
+Start localnet:
 
 ```bash
-cd deployments/localnet
-docker compose up
+./deployments/localnet/generate-keys.sh --clean
+docker build -f deployments/Dockerfile -t kairos-node:latest .
+docker compose \
+  -f deployments/localnet/docker-compose.yml \
+  -f deployments/localnet/localnet.override.yml \
+  up -d
 ```
 
-Open the dashboards:
+Open node visualizers:
 
 ```bash
-open http://localhost:8080  # validator-0
-open http://localhost:8081  # validator-1
-open http://localhost:8082  # validator-2
-open http://localhost:8083  # validator-3
-open http://localhost:8084  # validator-4
-open http://localhost:8085  # validator-5
+open http://127.0.0.1:8080  # validator-0
+open http://127.0.0.1:8081  # validator-1
+open http://127.0.0.1:8082  # validator-2
+open http://127.0.0.1:8083  # validator-3
+open http://127.0.0.1:8084  # validator-4
+open http://127.0.0.1:8085  # validator-5
+```
+
+Open observability:
+
+```bash
+open http://127.0.0.1:3000  # Grafana
+open http://127.0.0.1:9091  # Prometheus
 ```
 
 ### What to Look For
@@ -775,7 +761,7 @@ for local development and testing. See [deployments/README.md](deployments/READM
 for full documentation.
 
 - **Single node:** `docker compose -f deployments/docker-compose.yml up`
-- **6-validator localnet:** `cd deployments/localnet && docker compose up`
+- **6-validator localnet:** `docker compose -f deployments/localnet/docker-compose.yml -f deployments/localnet/localnet.override.yml up -d`
 - **Docker images:**
   - **Linux/CI:** `nix build .#dockerImage && docker load < result` (minimal ~50MB image)
   - **macOS:** `docker build -f deployments/Dockerfile -t kairos-node:latest .`

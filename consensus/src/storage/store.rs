@@ -548,7 +548,6 @@ impl ConsensusStore {
 
 #[cfg(test)]
 mod tests {
-    use ark_serialize::CanonicalSerialize;
 
     use super::*;
     use crate::{
@@ -834,16 +833,19 @@ mod tests {
             let pks: [BlsPublicKey; M_SIZE] = pks_vec.try_into().unwrap();
             let sigs = vec![s1, s2, s3];
 
-            let agg = AggregatedSignature::<M_SIZE>::new(pks.clone(), &msg, &sigs).expect("agg");
+            let peer_ids: [PeerId; M_SIZE] = pks
+                .iter()
+                .map(|pk| pk.to_peer_id())
+                .collect::<Vec<PeerId>>()
+                .try_into()
+                .unwrap();
+            let agg =
+                AggregatedSignature::<M_SIZE>::new(pks.clone(), peer_ids, &msg, &sigs).expect("agg");
             let m = MNotarization::<N, F, M_SIZE>::new(
                 6,
                 block.get_hash(),
                 agg.aggregated_signature,
-                pks.iter()
-                    .map(|pk| pk.to_peer_id())
-                    .collect::<Vec<PeerId>>()
-                    .try_into()
-                    .unwrap(),
+                peer_ids,
                 0,
             );
 
@@ -910,19 +912,25 @@ mod tests {
             let pks_vec = vec![pk1.clone(), pk2.clone(), pk3.clone()];
             let pks: [BlsPublicKey; M_SIZE] = pks_vec.try_into().unwrap();
 
-            let agg =
-                AggregatedSignature::<M_SIZE>::new(pks.clone(), msg.as_bytes(), &[s1, s2, s3])
-                    .expect("Failed to create aggregated signature");
+            let peer_ids: [PeerId; M_SIZE] = pks
+                .iter()
+                .map(|pk| pk.to_peer_id())
+                .collect::<Vec<PeerId>>()
+                .try_into()
+                .unwrap();
+            let agg = AggregatedSignature::<M_SIZE>::new(
+                pks.clone(),
+                peer_ids,
+                msg.as_bytes(),
+                &[s1, s2, s3],
+            )
+            .expect("Failed to create aggregated signature");
 
             let nullif = Nullification::<N, F, M_SIZE>::new(
                 view,
                 1,
                 agg.aggregated_signature,
-                pks.iter()
-                    .map(|pk| pk.to_peer_id())
-                    .collect::<Vec<PeerId>>()
-                    .try_into()
-                    .unwrap(),
+                peer_ids,
             );
             store.put_nullification(&nullif).unwrap();
 

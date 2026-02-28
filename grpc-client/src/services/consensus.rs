@@ -1,6 +1,5 @@
 //! Consensus service implementation for L-notarization queries.
 
-use ark_serialize::CanonicalSerialize;
 use tonic::{Request, Response, Status};
 
 use crate::proto::consensus_service_server::ConsensusService;

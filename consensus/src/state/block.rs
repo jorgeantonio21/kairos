@@ -6,7 +6,6 @@ use std::{hash::Hash, hash::Hasher, sync::Arc};
 use crate::{
     crypto::{
         aggregated::{BlsSignature, PeerId},
-        conversions::ArkSerdeWrapper,
         transaction_crypto::TxSignature,
     },
     state::transaction::Transaction,
@@ -37,7 +36,6 @@ pub struct Block {
     /// The header of the block
     pub header: BlockHeader,
     /// The signature of the leader's block proposal
-    #[rkyv(with = ArkSerdeWrapper)]
     pub leader_signature: BlsSignature,
     /// The transactions associated with the block
     pub transactions: Vec<Arc<Transaction>>,

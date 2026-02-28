@@ -1,6 +1,6 @@
 use blst::{
-    blst_lendian_from_scalar, blst_scalar, blst_scalar_from_le_bytes, blst_sk_add_n_check,
-    blst_sk_inverse, blst_sk_mul_n_check, blst_sk_sub_n_check,
+    blst_fr, blst_fr_add, blst_fr_from_scalar, blst_fr_inverse, blst_fr_mul, blst_fr_sub,
+    blst_lendian_from_scalar, blst_scalar, blst_scalar_from_fr, blst_scalar_from_le_bytes,
 };
 use rand::{CryptoRng, Rng};
 
@@ -34,7 +34,9 @@ impl Scalar {
     pub fn from_bytes_le(bytes: [u8; 32]) -> Self {
         let mut blst_scalar = blst_scalar::default();
         unsafe {
-            blst_scalar_from_le_bytes(&mut blst_scalar, bytes.as_ptr(), 32);
+            // This API returns `false` for zero values in secret-key semantics.
+            // Zero is valid for our generic field scalar type, so we accept the output value.
+            let _ = blst_scalar_from_le_bytes(&mut blst_scalar, bytes.as_ptr(), 32);
         };
         Self { inner: blst_scalar }
     }
@@ -99,11 +101,13 @@ impl Scalar {
     /// # Returns
     /// A new scalar containing the sum
     pub fn add(&self, other: &Scalar) -> Scalar {
-        let mut result = blst_scalar::default();
+        let lhs = self.as_fr();
+        let rhs = other.as_fr();
+        let mut result = blst_fr::default();
         unsafe {
-            blst_sk_add_n_check(&mut result, &self.inner, &other.inner);
+            blst_fr_add(&mut result, &lhs, &rhs);
         }
-        Scalar { inner: result }
+        Self::from_fr(&result)
     }
 
     /// Performs modular subtraction: `(self - other) mod r`.
@@ -114,11 +118,13 @@ impl Scalar {
     /// # Returns
     /// A new scalar containing the difference
     pub fn sub(&self, other: &Scalar) -> Scalar {
-        let mut result = blst_scalar::default();
+        let lhs = self.as_fr();
+        let rhs = other.as_fr();
+        let mut result = blst_fr::default();
         unsafe {
-            blst_sk_sub_n_check(&mut result, &self.inner, &other.inner);
+            blst_fr_sub(&mut result, &lhs, &rhs);
         }
-        Scalar { inner: result }
+        Self::from_fr(&result)
     }
 
     /// Performs modular multiplication: `(self * other) mod r`.
@@ -129,11 +135,13 @@ impl Scalar {
     /// # Returns
     /// A new scalar containing the product
     pub fn mul(&self, other: &Scalar) -> Scalar {
-        let mut result = blst_scalar::default();
+        let lhs = self.as_fr();
+        let rhs = other.as_fr();
+        let mut result = blst_fr::default();
         unsafe {
-            blst_sk_mul_n_check(&mut result, &self.inner, &other.inner);
+            blst_fr_mul(&mut result, &lhs, &rhs);
         }
-        Scalar { inner: result }
+        Self::from_fr(&result)
     }
 
     /// Computes the modular inverse: `self^(-1) mod r`.
@@ -147,11 +155,12 @@ impl Scalar {
         if self.is_zero() {
             return None;
         }
-        let mut result = blst_scalar::default();
+        let input = self.as_fr();
+        let mut result = blst_fr::default();
         unsafe {
-            blst_sk_inverse(&mut result, &self.inner);
+            blst_fr_inverse(&mut result, &input);
         };
-        Some(Scalar { inner: result })
+        Some(Self::from_fr(&result))
     }
 
     /// Performs modular division: `(self * other^(-1)) mod r`.
@@ -177,5 +186,54 @@ impl Scalar {
     /// Use with caution - direct manipulation may violate invariants.
     pub fn as_blst_scalar(&self) -> &blst_scalar {
         &self.inner
+    }
+
+    fn as_fr(&self) -> blst_fr {
+        let mut fr = blst_fr::default();
+        unsafe {
+            blst_fr_from_scalar(&mut fr, &self.inner);
+        }
+        fr
+    }
+
+    fn from_fr(fr: &blst_fr) -> Self {
+        let mut scalar = blst_scalar::default();
+        unsafe {
+            blst_scalar_from_fr(&mut scalar, fr);
+        }
+        Self { inner: scalar }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scalar;
+
+    #[test]
+    fn roundtrip_bytes_le() {
+        let original = Scalar::from_u64(123456789);
+        let bytes = original.to_bytes_le();
+        let decoded = Scalar::from_bytes_le(bytes);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn inverse_of_zero_is_none() {
+        assert!(Scalar::zero().inverse().is_none());
+    }
+
+    #[test]
+    fn div_by_zero_is_none() {
+        let one = Scalar::one();
+        assert!(one.div(&Scalar::zero()).is_none());
+    }
+
+    #[test]
+    fn add_sub_roundtrip() {
+        let a = Scalar::from_u64(55);
+        let b = Scalar::from_u64(21);
+        let sum = a.add(&b);
+        let back = sum.sub(&b);
+        assert_eq!(back, a);
     }
 }

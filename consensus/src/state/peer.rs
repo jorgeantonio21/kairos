@@ -5,7 +5,6 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::crypto::{
     aggregated::{BlsPublicKey, PeerId},
-    conversions::ArkSerdeWrapper,
 };
 
 /// [`Peer`] represents a peer in the consensus protocol.
@@ -16,7 +15,6 @@ pub struct Peer {
     /// The peer's ID
     pub peer_id: PeerId,
     /// The peer's public key
-    #[rkyv(with = ArkSerdeWrapper)]
     pub public_key: BlsPublicKey,
     /// Whether the peer is the current leader
     pub is_current_leader: bool,

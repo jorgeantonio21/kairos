@@ -465,7 +465,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         let genesis_block_hash = Block::genesis_hash();
         let genesis_block = Block::genesis(
             genesis_leader,
-            BlsSignature(ark_bls12_381::G1Affine::default()),
+            BlsSignature::default(),
         );
         debug_assert_eq!(genesis_block.get_hash(), genesis_block_hash);
 
@@ -1760,7 +1760,6 @@ mod tests {
         },
         storage::store::ConsensusStore,
     };
-    use ark_serialize::CanonicalSerialize;
     use rand::thread_rng;
     use std::{
         collections::{HashMap, HashSet},
@@ -1990,7 +1989,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2042,7 +2041,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2203,7 +2202,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2274,7 +2273,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2337,7 +2336,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2401,7 +2400,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2866,7 +2865,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2989,7 +2988,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -6994,7 +6993,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -7191,7 +7190,7 @@ mod tests {
             .map(|pid| {
                 let pk = setup.peer_set.id_to_public_key.get(pid).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 hex::encode(buf)
             })
             .collect();
@@ -7264,7 +7263,7 @@ mod tests {
             .map(|pid| {
                 let pk = setup.peer_set.id_to_public_key.get(pid).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 hex::encode(buf)
             })
             .collect();
@@ -7309,7 +7308,7 @@ mod tests {
             .map(|pid| {
                 let pk = setup.peer_set.id_to_public_key.get(pid).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 hex::encode(buf)
             })
             .collect();
@@ -7422,7 +7421,7 @@ mod tests {
             .map(|pid| {
                 let pk = setup.peer_set.id_to_public_key.get(pid).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 hex::encode(buf)
             })
             .collect();

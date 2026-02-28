@@ -854,13 +854,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "ark-bls12-381",
- "ark-ec",
- "ark-ff",
- "ark-serialize",
  "blake3",
  "criterion 0.5.1",
  "crossbeam",
+ "crypto",
  "ed25519-dalek",
  "figment",
  "hex",
@@ -1058,9 +1055,11 @@ name = "crypto"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "blst",
  "hex",
  "rand 0.8.5",
+ "rkyv",
 ]
 
 [[package]]
@@ -3837,11 +3836,12 @@ name = "tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ark-serialize",
  "commonware-cryptography",
  "commonware-runtime",
  "consensus",
+ "criterion 0.5.1",
  "crossbeam",
+ "crypto",
  "grpc-client",
  "hex",
  "p2p",

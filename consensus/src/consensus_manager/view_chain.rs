@@ -1216,9 +1216,15 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         }
 
         // Create and persist the L-notarization (finality certificate for light clients)
-        // Aggregate all vote signatures and collect peer IDs
-        let aggregated_signature = BlsSignature::aggregate(ctx.votes.iter().map(|v| &v.signature));
-        let peer_ids: Vec<_> = ctx.votes.iter().map(|v| v.peer_id).collect();
+        // Combine threshold partial signatures in deterministic peer_id order.
+        let mut sorted_votes: Vec<_> = ctx.votes.iter().collect();
+        sorted_votes.sort_by_key(|vote| vote.peer_id);
+        let peer_ids: Vec<_> = sorted_votes.iter().map(|vote| vote.peer_id).collect();
+        let partials: Vec<_> = sorted_votes
+            .iter()
+            .map(|vote| (vote.peer_id, vote.signature))
+            .collect();
+        let aggregated_signature = BlsSignature::combine_partials(&partials)?;
 
         let l_notarization = LNotarization::<N, F>::new(
             view_number,

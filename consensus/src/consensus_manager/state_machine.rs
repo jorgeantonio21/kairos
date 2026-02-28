@@ -1473,7 +1473,6 @@ mod tests {
         storage::store::ConsensusStore,
         validation::PendingStateWriter,
     };
-    use ark_serialize::CanonicalSerialize;
     use rand::thread_rng;
     use rtrb::RingBuffer;
     use std::{
@@ -1584,7 +1583,7 @@ mod tests {
             for peer_id in &peer_set.sorted_peer_ids {
                 let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 let peer_str = hex::encode(buf);
                 peer_strs.push(peer_str);
             }

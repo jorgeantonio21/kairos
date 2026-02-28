@@ -3,7 +3,6 @@ use std::hash::{Hash, Hasher};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::crypto::aggregated::{BlsPublicKey, BlsSignature, PeerId};
-use crate::crypto::conversions::ArkSerdeWrapper;
 use crate::state::peer::PeerSet;
 
 /// [`Vote`] represents a vote for a given block.
@@ -17,7 +16,6 @@ pub struct Vote {
     pub block_hash: [u8; blake3::OUT_LEN],
     /// The signature of block by the peer that is voting
     /// for the current block
-    #[rkyv(with = ArkSerdeWrapper)]
     pub signature: BlsSignature,
     /// The public key of the peer that is
     /// voting for the current block
@@ -85,7 +83,6 @@ pub struct MNotarization<const N: usize, const F: usize, const M_SIZE: usize> {
     /// The hash of the block that has been notarized
     pub block_hash: [u8; blake3::OUT_LEN],
     /// The aggregated signature of the block by the peers that have notarized it
-    #[rkyv(with = ArkSerdeWrapper)]
     pub aggregated_signature: BlsSignature,
     /// The peer IDs of the peers that have notarized the block
     pub peer_ids: [PeerId; M_SIZE],
@@ -115,14 +112,19 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> MNotarization<N, F, M_
         let public_keys = self
             .peer_ids
             .iter()
-            .map(|peer_id| {
-                peer_set
-                    .get_public_key(peer_id)
-                    .expect("Peer ID not found in peer set")
-                    .clone()
-            })
+            .filter_map(|peer_id| peer_set.get_public_key(peer_id).ok().cloned())
             .collect::<Vec<BlsPublicKey>>();
-        BlsPublicKey::aggregate(&public_keys).verify(&self.block_hash, &self.aggregated_signature)
+
+        if public_keys.len() != self.peer_ids.len() {
+            return false;
+        }
+
+        BlsPublicKey::verify_threshold(
+            &public_keys,
+            &self.peer_ids,
+            &self.block_hash,
+            &self.aggregated_signature,
+        )
     }
 }
 
@@ -163,7 +165,6 @@ pub struct LNotarization<const N: usize, const F: usize> {
     /// The hash of the finalized block
     pub block_hash: [u8; blake3::OUT_LEN],
     /// The aggregated BLS signature from n-f validators
-    #[rkyv(with = ArkSerdeWrapper)]
     pub aggregated_signature: BlsSignature,
     /// The peer IDs of the validators who signed (N-F to N signers)
     pub peer_ids: Vec<PeerId>,
@@ -206,7 +207,12 @@ impl<const N: usize, const F: usize> LNotarization<N, F> {
             return false;
         }
 
-        BlsPublicKey::aggregate(&public_keys).verify(&self.block_hash, &self.aggregated_signature)
+        BlsPublicKey::verify_threshold(
+            &public_keys,
+            &self.peer_ids,
+            &self.block_hash,
+            &self.aggregated_signature,
+        )
     }
 }
 

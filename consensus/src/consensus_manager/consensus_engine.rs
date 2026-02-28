@@ -436,7 +436,6 @@ mod tests {
     use crate::metrics::ConsensusMetrics;
     use crate::state::peer::PeerSet;
     use crate::storage::store::ConsensusStore;
-    use ark_serialize::CanonicalSerialize;
     use rand::thread_rng;
     use rtrb::RingBuffer;
     use tempfile::tempdir;
@@ -478,7 +477,7 @@ mod tests {
         for peer_id in &peer_set.sorted_peer_ids {
             let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             peer_strs.push(hex::encode(buf));
         }
         let config = create_test_config(peer_strs);
@@ -557,7 +556,7 @@ mod tests {
         for peer_id in &peer_set.sorted_peer_ids {
             let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             peer_strs.push(hex::encode(buf));
         }
         let config = create_test_config(peer_strs);

@@ -3,10 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::crypto::{
-    aggregated::{BlsPublicKey, PeerId},
-    conversions::ArkSerdeWrapper,
-};
+use crate::crypto::aggregated::{BlsPublicKey, PeerId};
 
 /// [`Peer`] represents a peer in the consensus protocol.
 ///
@@ -16,7 +13,6 @@ pub struct Peer {
     /// The peer's ID
     pub peer_id: PeerId,
     /// The peer's public key
-    #[rkyv(with = ArkSerdeWrapper)]
     pub public_key: BlsPublicKey,
     /// Whether the peer is the current leader
     pub is_current_leader: bool,
@@ -119,7 +115,7 @@ mod tests {
         let public_key = secret_key.public_key();
         let expected_peer_id = public_key.to_peer_id();
 
-        let peer = Peer::new(public_key.clone(), true);
+        let peer = Peer::new(public_key, true);
 
         assert_eq!(peer.peer_id, expected_peer_id);
         assert_eq!(peer.public_key, public_key);
@@ -136,8 +132,8 @@ mod tests {
         let public_key2 = secret_key2.public_key();
 
         // Same public key should create equal peers
-        let peer1 = Peer::new(public_key1.clone(), true);
-        let peer2 = Peer::new(public_key1.clone(), false);
+        let peer1 = Peer::new(public_key1, true);
+        let peer2 = Peer::new(public_key1, false);
         assert_eq!(peer1, peer2);
 
         // Different public keys should create unequal peers
@@ -159,7 +155,7 @@ mod tests {
         let public_key = secret_key.public_key();
         let expected_peer_id = public_key.to_peer_id();
 
-        let peer_set = PeerSet::new(vec![public_key.clone()]);
+        let peer_set = PeerSet::new(vec![public_key]);
 
         assert_eq!(peer_set.id_to_public_key.len(), 1);
         assert_eq!(peer_set.sorted_peer_ids.len(), 1);
@@ -206,7 +202,7 @@ mod tests {
         let public_key = secret_key.public_key();
 
         // Try to create PeerSet with duplicate public keys
-        let _peer_set = PeerSet::new(vec![public_key.clone(), public_key]);
+        let _peer_set = PeerSet::new(vec![public_key, public_key]);
     }
 
     #[test]
@@ -216,7 +212,7 @@ mod tests {
         let public_key = secret_key.public_key();
         let peer_id = public_key.to_peer_id();
 
-        let peer_set = PeerSet::new(vec![public_key.clone()]);
+        let peer_set = PeerSet::new(vec![public_key]);
 
         let result = peer_set.get_public_key(&peer_id);
         assert!(result.is_ok());

@@ -10,7 +10,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ark_serialize::CanonicalSerialize;
 use commonware_runtime::tokio::Runner as TokioRunner;
 use consensus::{
     consensus_manager::config::{ConsensusConfig, GenesisAccount, Network as NetworkType},
@@ -189,7 +188,7 @@ pub fn create_gossip_test_network(
     for _i in 0..num_nodes {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -201,7 +200,7 @@ pub fn create_gossip_test_network(
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 

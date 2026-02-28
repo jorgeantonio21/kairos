@@ -11,7 +11,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ark_serialize::CanonicalSerialize;
 use commonware_runtime::tokio::Runner as TokioRunner;
 use commonware_runtime::{Clock, Runner};
 use consensus::{
@@ -411,7 +410,7 @@ fn test_multi_node_happy_path() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -423,7 +422,7 @@ fn test_multi_node_happy_path() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -808,7 +807,7 @@ fn test_multi_node_continuous_load() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -820,7 +819,7 @@ fn test_multi_node_continuous_load() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -1089,7 +1088,7 @@ fn test_multi_node_crashed_replica() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
     let peer_set = PeerSet::new(public_keys);
@@ -1098,7 +1097,7 @@ fn test_multi_node_crashed_replica() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -1382,7 +1381,7 @@ fn test_multi_node_equivocating_leader() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
     let peer_set = PeerSet::new(public_keys);
@@ -1391,7 +1390,7 @@ fn test_multi_node_equivocating_leader() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -1734,7 +1733,7 @@ fn test_multi_node_invalid_tx_rejection() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
     let peer_set = PeerSet::new(public_keys);
@@ -1742,7 +1741,7 @@ fn test_multi_node_invalid_tx_rejection() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -1970,7 +1969,7 @@ fn test_multi_node_invalid_block_from_leader() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
     let peer_set = PeerSet::new(public_keys);
@@ -1979,7 +1978,7 @@ fn test_multi_node_invalid_block_from_leader() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 

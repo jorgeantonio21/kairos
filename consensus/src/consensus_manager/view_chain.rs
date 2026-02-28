@@ -1207,7 +1207,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
 
         // Persist view metadata (marked as finalized)
         let leader_pk = peers.id_to_public_key.get(&leader_id).unwrap();
-        let view = View::new(view_number, leader_pk.clone(), true, false);
+        let view = View::new(view_number, *leader_pk, true, false);
         self.persistence_writer.put_view(&view)?;
 
         // Persist all votes
@@ -1216,9 +1216,15 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         }
 
         // Create and persist the L-notarization (finality certificate for light clients)
-        // Aggregate all vote signatures and collect peer IDs
-        let aggregated_signature = BlsSignature::aggregate(ctx.votes.iter().map(|v| &v.signature));
-        let peer_ids: Vec<_> = ctx.votes.iter().map(|v| v.peer_id).collect();
+        // Combine threshold partial signatures in deterministic peer_id order.
+        let mut sorted_votes: Vec<_> = ctx.votes.iter().collect();
+        sorted_votes.sort_by_key(|vote| vote.peer_id);
+        let peer_ids: Vec<_> = sorted_votes.iter().map(|vote| vote.peer_id).collect();
+        let partials: Vec<_> = sorted_votes
+            .iter()
+            .map(|vote| (vote.peer_id, vote.signature))
+            .collect();
+        let aggregated_signature = BlsSignature::combine_partials(&partials)?;
 
         let l_notarization = LNotarization::<N, F>::new(
             view_number,
@@ -1324,7 +1330,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         self.persistence_writer.put_leader(&leader)?;
 
         let leader_pk = peers.id_to_public_key.get(&leader_id).unwrap();
-        let view = View::new(view_number, leader_pk.clone(), true, false); // Finalized (committed via child), not nullified
+        let view = View::new(view_number, *leader_pk, true, false); // Finalized (committed via child), not nullified
         self.persistence_writer.put_view(&view)?;
 
         // Persist the votes
@@ -1365,7 +1371,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         self.persistence_writer.put_leader(&leader)?;
 
         let leader_pk = peers.id_to_public_key.get(&ctx.leader_id).unwrap();
-        let view = View::new(view_number, leader_pk.clone(), false, true);
+        let view = View::new(view_number, *leader_pk, false, true);
         self.persistence_writer.put_view(&view)?;
 
         for vote in ctx.votes.iter() {
@@ -1434,7 +1440,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
 
         // Persist view metadata (marked as nullified)
         let leader_pk = peers.id_to_public_key.get(&leader_id).unwrap();
-        let view = View::new(view_number, leader_pk.clone(), false, true); // nullified=true
+        let view = View::new(view_number, *leader_pk, false, true); // nullified=true
         self.persistence_writer.put_view(&view)?;
 
         // Persist votes (if any were collected before nullification)

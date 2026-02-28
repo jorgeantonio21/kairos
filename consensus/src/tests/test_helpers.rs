@@ -21,7 +21,6 @@ use crate::{
 use std::sync::{Arc, atomic::AtomicBool};
 use tokio::sync::Notify;
 
-use ark_serialize::CanonicalSerialize;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -222,7 +221,7 @@ impl TestFixture {
         // Generate keypairs for all replicas
         for _ in 0..n {
             let keypair = KeyPair::generate();
-            public_keys.push(keypair.public_key.clone());
+            public_keys.push(keypair.public_key);
             keypairs.push(keypair);
         }
 
@@ -234,7 +233,7 @@ impl TestFixture {
         for peer_id in &peer_set.sorted_peer_ids {
             let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             peer_strs.push(hex::encode(buf));
         }
 

@@ -477,7 +477,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             });
         }
 
-        let block_signature = block.leader_signature.clone();
+        let block_signature = block.leader_signature;
         self.block_hash = Some(block_hash);
         self.block = Some(block);
         self.state_diff = Some(state_diff);

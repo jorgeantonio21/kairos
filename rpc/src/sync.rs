@@ -374,7 +374,6 @@ pub fn parse_validator_keys(validators: &[ValidatorPeerInfo]) -> Vec<ed25519::Pu
 /// Returns a PeerSet containing all validators whose BLS public keys could be parsed.
 /// Validators without bls_public_key configured will be skipped.
 pub fn parse_validator_peer_set(validators: &[ValidatorPeerInfo]) -> PeerSet {
-    use ark_serialize::CanonicalDeserialize;
     use consensus::crypto::aggregated::BlsPublicKey;
 
     let bls_keys: Vec<BlsPublicKey> = validators
@@ -402,14 +401,14 @@ mod tests {
 
     fn create_test_block(height: u64) -> Block {
         Block::new(
-            height,                                      // view
-            0,                                           // leader (PeerId)
-            [0u8; 32],                                   // parent_block_hash
-            vec![],                                      // transactions
-            0,                                           // timestamp
-            BlsSignature::aggregate(std::iter::empty()), // leader_signature
-            true,                                        // is_finalized
-            height,                                      // height
+            height,                  // view
+            0,                       // leader (PeerId)
+            [0u8; 32],               // parent_block_hash
+            vec![],                  // transactions
+            0,                       // timestamp
+            BlsSignature::default(), // leader_signature
+            true,                    // is_finalized
+            height,                  // height
         )
     }
 
@@ -816,8 +815,13 @@ mod tests {
         // Create properly signed L-notarization
         // Sign the block hash with each validator's BLS key
         let signatures: Vec<_> = bls_keys.iter().map(|sk| sk.sign(&block_hash)).collect();
+        let partials: Vec<_> = peer_ids
+            .iter()
+            .copied()
+            .zip(signatures.iter().copied())
+            .collect();
         let aggregated_signature =
-            consensus::crypto::aggregated::BlsSignature::aggregate(signatures.iter());
+            consensus::crypto::aggregated::BlsSignature::combine_partials(&partials).unwrap();
 
         let l_notarization = LNotarization::<6, 1>::new(
             1,          // view (matches block)
@@ -871,7 +875,7 @@ mod tests {
         let l_notarization = LNotarization::<6, 1>::new(
             1,
             wrong_hash, // Mismatched hash
-            BlsSignature::aggregate(std::iter::empty()),
+            BlsSignature::default(),
             vec![0, 1],
             1,
         );

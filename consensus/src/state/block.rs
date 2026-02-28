@@ -6,7 +6,6 @@ use std::{hash::Hash, hash::Hasher, sync::Arc};
 use crate::{
     crypto::{
         aggregated::{BlsSignature, PeerId},
-        conversions::ArkSerdeWrapper,
         transaction_crypto::TxSignature,
     },
     state::transaction::Transaction,
@@ -37,7 +36,6 @@ pub struct Block {
     /// The header of the block
     pub header: BlockHeader,
     /// The signature of the leader's block proposal
-    #[rkyv(with = ArkSerdeWrapper)]
     pub leader_signature: BlsSignature,
     /// The transactions associated with the block
     pub transactions: Vec<Arc<Transaction>>,
@@ -362,7 +360,7 @@ mod tests {
             parent,
             txs.clone(),
             123456,
-            leader_signature.clone(),
+            leader_signature,
             false,
             1,
         );
@@ -377,7 +375,7 @@ mod tests {
         let parent = [2u8; blake3::OUT_LEN];
         let sk = BlsSecretKey::generate(&mut thread_rng());
         let leader_signature = sk.sign(b"block proposal");
-        let b1 = gen_block(6, 0, parent, 2, 999, leader_signature.clone(), 2);
+        let b1 = gen_block(6, 0, parent, 2, 999, leader_signature, 2);
         let b2 = gen_block(6, 0, parent, 2, 999, leader_signature, 2);
         assert_ne!(b1.get_hash(), b2.get_hash());
         assert_ne!(b1, b2);
@@ -388,7 +386,7 @@ mod tests {
         let parent = [3u8; blake3::OUT_LEN];
         let sk = BlsSecretKey::generate(&mut thread_rng());
         let leader_signature = sk.sign(b"block proposal");
-        let b1 = gen_block(7, 0, parent, 2, 111, leader_signature.clone(), 3);
+        let b1 = gen_block(7, 0, parent, 2, 111, leader_signature, 3);
         let b2 = gen_block(7, 0, parent, 2, 111, leader_signature, 3);
         assert_ne!(b1.get_hash(), b2.get_hash());
     }
@@ -414,16 +412,7 @@ mod tests {
         // Generate transaction(s) ONCE
         let txs: Vec<Arc<Transaction>> = (0..1).map(|_| Arc::new(gen_tx())).collect();
 
-        let mut b = Block::new(
-            8,
-            0,
-            parent,
-            txs.clone(),
-            222,
-            leader_signature.clone(),
-            false,
-            8,
-        );
+        let mut b = Block::new(8, 0, parent, txs.clone(), 222, leader_signature, false, 8);
         // Simulate an archived block with hash = None
         b.hash = None;
         let bytes = serialize_for_db(&b).expect("serialize");

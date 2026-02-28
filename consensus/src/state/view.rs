@@ -1,6 +1,6 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::crypto::{aggregated::BlsPublicKey, conversions::ArkSerdeWrapper};
+use crate::crypto::aggregated::BlsPublicKey;
 
 /// [`View`] represents a view in the consensus protocol.
 ///
@@ -13,7 +13,6 @@ pub struct View {
     /// The view number
     pub view: u64,
     /// The leader's BlsPublicKey of the view
-    #[rkyv(with = ArkSerdeWrapper)]
     pub leader: BlsPublicKey,
     /// Whether the view is currently active
     pub is_current: bool,

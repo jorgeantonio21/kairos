@@ -863,7 +863,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         let leader_signature = self.secret_key.sign(&block_hash);
 
         // Update the block with the true leader signature.
-        block.leader_signature = leader_signature.clone();
+        block.leader_signature = leader_signature;
 
         // Update dashboard with block proposal info
         if let Some(ref db) = self.dashboard {
@@ -960,7 +960,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         let vote = Vote::new(
             view,
             block_hash,
-            vote_signature.clone(),
+            vote_signature,
             self.view_manager.replica_id(),
             leader_id,
         );
@@ -1473,7 +1473,6 @@ mod tests {
         storage::store::ConsensusStore,
         validation::PendingStateWriter,
     };
-    use ark_serialize::CanonicalSerialize;
     use rand::thread_rng;
     use rtrb::RingBuffer;
     use std::{
@@ -1584,7 +1583,7 @@ mod tests {
             for peer_id in &peer_set.sorted_peer_ids {
                 let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 let peer_str = hex::encode(buf);
                 peer_strs.push(peer_str);
             }

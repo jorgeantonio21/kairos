@@ -59,16 +59,20 @@ pub(crate) fn create_notarization_data<const N: usize>(
         ));
     }
 
+    let mut selected_votes: Vec<&Vote> = votes.iter().collect();
+    selected_votes.sort_by_key(|vote| vote.peer_id);
+    let selected_votes = &selected_votes[..N];
+
     let mut peer_ids: [PeerId; N] = [0; N];
-    let signatures_iter = votes
+    let partials: Vec<(PeerId, BlsSignature)> = selected_votes
         .iter()
         .enumerate()
-        .map(|(i, v)| {
-            peer_ids[i] = v.peer_id;
-            &v.signature
+        .map(|(i, vote)| {
+            peer_ids[i] = vote.peer_id;
+            (vote.peer_id, vote.signature)
         })
-        .take(N);
-    let aggregated_signature = BlsSignature::aggregate(signatures_iter);
+        .collect();
+    let aggregated_signature = BlsSignature::combine_partials(&partials)?;
     Ok(NotarizationData {
         peer_ids,
         aggregated_signature,
@@ -128,16 +132,20 @@ pub(crate) fn create_nullification_data<const N: usize>(
         ));
     }
 
+    let mut selected_nullifications: Vec<&Nullify> = nullifications.iter().collect();
+    selected_nullifications.sort_by_key(|nullify| nullify.peer_id);
+    let selected_nullifications = &selected_nullifications[..N];
+
     let mut peer_ids: [PeerId; N] = [0; N];
-    let signatures_iter = nullifications
+    let partials: Vec<(PeerId, BlsSignature)> = selected_nullifications
         .iter()
         .enumerate()
-        .map(|(i, n)| {
-            peer_ids[i] = n.peer_id;
-            &n.signature
+        .map(|(i, nullify)| {
+            peer_ids[i] = nullify.peer_id;
+            (nullify.peer_id, nullify.signature)
         })
-        .take(N);
-    let aggregated_signature = BlsSignature::aggregate(signatures_iter);
+        .collect();
+    let aggregated_signature = BlsSignature::combine_partials(&partials)?;
     Ok(NullificationData {
         peer_ids,
         aggregated_signature,

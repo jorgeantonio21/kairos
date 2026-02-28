@@ -1,16 +1,14 @@
 use anyhow::Result;
-use blst::{
-    BLST_ERROR, blst_hash_to_g1, blst_p1, blst_p1_add_or_double, blst_p1_affine,
-    blst_p1_affine_compress, blst_p1_affine_in_g1, blst_p1_affine_serialize, blst_p1_deserialize,
-    blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p2, blst_p2_affine,
-    blst_p2_affine_compress, blst_p2_generator, blst_p2_mult, blst_p2_to_affine, min_sig::*,
-};
+use blst::min_sig::{PublicKey, Signature};
 use rand::{CryptoRng, Rng};
 
+use crate::bls::constants::BLS_SIGNATURE_BYTES;
+use crate::bls::ops::{
+    combine_signatures_with_lagrange, public_key_from_scalar, sign_with_scalar,
+    verify_signature_bytes,
+};
+use crate::threshold_math::{lagrange_coefficient_at_zero, lagrange_coefficients_for_peer_ids};
 use crate::{polynomial::Polynomial, scalar::Scalar};
-
-/// The domain separation tag for BLS signatures.
-const DST: &[u8] = b"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_";
 
 /// Share of a secret in Shamir's secret sharing scheme.
 /// Each share consists of an x-coordinate (index) and y-coordinate (secret share).
@@ -73,38 +71,6 @@ impl ShamirSharing {
         shares
     }
 
-    /// Compute Lagrange coefficient λ_i for interpolation at x=0.
-    /// λ_i = ∏_{j≠i} x_j / (x_j - x_i)
-    ///
-    /// Used in reconstruction to weight each share appropriately.
-    ///
-    /// # Arguments
-    /// * `shares` - Slice of shares to use for interpolation
-    /// * `i` - Index of the share to compute the coefficient for
-    ///
-    /// # Returns
-    /// Lagrange coefficient λ_i for the given share
-    pub fn lagrange_coefficient(&self, shares: &[Share], i: usize) -> Scalar {
-        let mut numerator = Scalar::one();
-        let mut denominator = Scalar::one();
-
-        for (j, share_j) in shares.iter().enumerate() {
-            if i != j {
-                // numerator *= x_j
-                numerator = numerator.mul(&share_j.x);
-
-                // denominator *= (x_j - x_i)
-                let diff = share_j.x.sub(&shares[i].x);
-                denominator = denominator.mul(&diff);
-            }
-        }
-
-        // Return numerator / denominator
-        numerator
-            .div(&denominator)
-            .expect("Division by zero in Lagrange coefficient")
-    }
-
     /// Reconstruct secret from threshold shares using Lagrange interpolation.
     /// Combines shares with formula: secret = ∑ y_i × λ_i
     ///
@@ -113,22 +79,23 @@ impl ShamirSharing {
     ///
     /// # Panics
     /// Panics if fewer than threshold shares provided
-    pub fn reconstruct(&self, shares: &[Share]) -> Scalar {
+    pub fn reconstruct(&self, shares: &[Share]) -> Result<Scalar> {
         debug_assert!(
             shares.len() >= self.threshold,
             "Not enough shares to reconstruct"
         );
 
         let shares_to_use = &shares[..self.threshold];
+        let xs: Vec<Scalar> = shares_to_use.iter().map(|share| share.x.clone()).collect();
         let mut secret = Scalar::zero();
 
         for (i, share) in shares_to_use.iter().enumerate() {
-            let lambda = self.lagrange_coefficient(shares_to_use, i);
+            let lambda = lagrange_coefficient_at_zero(&xs, i)?;
             let term = share.y.mul(&lambda);
             secret = secret.add(&term);
         }
 
-        secret
+        Ok(secret)
     }
 }
 
@@ -191,26 +158,9 @@ impl ThresholdBLS {
     /// This operation is computationally expensive but secure.
     /// The resulting public key can be safely shared.
     fn scalar_to_public_key(scalar: &Scalar) -> Result<PublicKey> {
-        unsafe {
-            // Get G2 generator
-            let generator = blst_p2_generator();
-
-            // Multiply generator by scalar
-            let mut pk_point = blst_p2::default();
-            blst_p2_mult(&mut pk_point, generator, scalar.to_bytes_le().as_ptr(), 255);
-
-            // Convert to affine
-            let mut pk_affine = blst_p2_affine::default();
-            blst_p2_to_affine(&mut pk_affine, &pk_point);
-
-            // Serialize
-            let mut pk_bytes = [0u8; 96];
-            blst_p2_affine_compress(pk_bytes.as_mut_ptr(), &pk_affine);
-
-            // Create PublicKey from bytes
-            PublicKey::from_bytes(&pk_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to create public key: {:?}", e))
-        }
+        let pk_bytes = public_key_from_scalar(scalar)?;
+        PublicKey::from_bytes(&pk_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to create public key: {:?}", e))
     }
 
     /// Generate master keypair and distribute key shares.
@@ -257,155 +207,48 @@ impl ThresholdBLS {
     /// # Returns
     /// Partial signature that can be combined with others
     pub fn partial_sign(key_share: &KeyShare, message: &[u8]) -> Result<PartialSignature> {
-        unsafe {
-            // Hash message to G1 point
-            let mut hash_point = blst_p1::default();
-            blst_hash_to_g1(
-                &mut hash_point,
-                message.as_ptr(),
-                message.len(),
-                DST.as_ptr(),
-                DST.len(),
-                std::ptr::null(),
-                0,
-            );
-
-            // Multiply hash by secret scalar: sig = H(m) * scalar
-            let mut sig_point = blst_p1::default();
-            blst_p1_mult(
-                &mut sig_point,
-                &hash_point,
-                key_share.secret_scalar.to_bytes_le().as_ptr(),
-                255,
-            );
-
-            // Convert to affine
-            let mut sig_affine = blst_p1_affine::default();
-            blst_p1_to_affine(&mut sig_affine, &sig_point);
-
-            // Serialize
-            let mut sig_bytes = [0u8; 48];
-            blst_p1_affine_compress(sig_bytes.as_mut_ptr(), &sig_affine);
-
-            // Create Signature from bytes
-            let signature = Signature::from_bytes(&sig_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to create signature: {:?}", e))?;
-
-            Ok(PartialSignature {
-                id: key_share.id,
-                signature,
-            })
-        }
+        let sig_bytes = sign_with_scalar(&key_share.secret_scalar, message)?;
+        let signature = Signature::from_bytes(&sig_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to create signature: {:?}", e))?;
+        Ok(PartialSignature {
+            id: key_share.id,
+            signature,
+        })
     }
 
     /// Aggregate partial signatures into a complete signature.
     /// Uses Lagrange interpolation in the exponent to combine signatures correctly.
     ///
     /// # Arguments
-    /// * `partial_signatures` - At least t partial signatures to aggregate
+    /// * `partial_signatures` - Exactly t partial signatures to aggregate
     ///
     /// # Returns
     /// Complete BLS signature
     pub fn aggregate(&self, partial_signatures: &[PartialSignature]) -> Result<Signature> {
-        if partial_signatures.len() < self.threshold {
+        if partial_signatures.len() != self.threshold {
             return Err(anyhow::anyhow!(
-                "Not enough partial signatures to aggregate: got {}, expected {}",
+                "Invalid partial signature count: got {}, expected exactly {}",
                 partial_signatures.len(),
                 self.threshold
             ));
         }
 
-        // Use exactly threshold signatures
-        let sigs_to_use = &partial_signatures[..self.threshold];
-
-        // Build shares for Lagrange coefficient computation
-        let shares: Vec<Share> = sigs_to_use
+        let participant_ids: Vec<u64> = partial_signatures
             .iter()
-            .map(|ps| Share {
-                x: Scalar::from_u64(ps.id),
-                y: Scalar::zero(), // Not used for coefficient calculation
-            })
+            .map(|partial| partial.id)
             .collect();
-
-        let lambdas: Vec<Scalar> = (0..self.threshold)
-            .map(|i| self.shamir.lagrange_coefficient(&shares, i))
+        let lambdas = lagrange_coefficients_for_peer_ids(&participant_ids)?;
+        let signatures: Vec<[u8; BLS_SIGNATURE_BYTES]> = partial_signatures
+            .iter()
+            .map(|partial| partial.signature.to_bytes())
             .collect();
-
-        // Steps 2 & 3: Multiply each signature by its Lagrange coefficient and aggregate
-        // σ = ∏ σᵢ^λᵢ = ∑ (σᵢ * λᵢ) in additive notation
-        let mut aggregated_point = blst_p1::default();
-
-        for (i, (partial, lambda)) in sigs_to_use.iter().zip(lambdas.iter()).enumerate() {
-            let sig_bytes = partial.signature.to_bytes();
-            let mut sig_point = blst_p1_affine::default();
-
-            unsafe {
-                // Deserialize signature to affine point
-                let result = blst_p1_deserialize(&mut sig_point, sig_bytes.as_ptr());
-                if result != BLST_ERROR::BLST_SUCCESS {
-                    return Err(anyhow::anyhow!(
-                        "Failed to deserialize signature {}: {:?}",
-                        i,
-                        result
-                    ));
-                }
-
-                // Check point is valid
-                if !blst_p1_affine_in_g1(&sig_point) {
-                    return Err(anyhow::anyhow!("Signature {}th point not in G1", i));
-                }
-            }
-
-            // Scalar multiplication: sig_point * lambda
-            let mut multiplied_point = blst_p1::default();
-            let lambda_bytes = lambda.to_bytes_le();
-
-            unsafe {
-                // Convert affine point to projective point
-                let mut proj_sig_point = blst_p1::default();
-                blst_p1_from_affine(&mut proj_sig_point, &sig_point);
-
-                // Perform scalar multiplication
-                blst_p1_mult(
-                    &mut multiplied_point,
-                    &proj_sig_point,
-                    lambda_bytes.as_ptr(),
-                    255, // number of bits in scalar
-                );
-            }
-
-            // Add to aggregated result
-            if i == 0 {
-                // First point - just copy
-                aggregated_point = multiplied_point;
-            } else {
-                // Add to accumulator
-                unsafe {
-                    blst_p1_add_or_double(
-                        &mut aggregated_point,
-                        &aggregated_point,
-                        &multiplied_point,
-                    );
-                }
-            }
-        }
-
-        // Step 4: Convert aggregated point back to Signature
-        // First convert to affine for serialization
-        let mut aggregated_affine = blst_p1_affine::default();
-        unsafe {
-            blst_p1_to_affine(&mut aggregated_affine, &aggregated_point);
-        }
-
-        // Serialize the point
-        let mut serialized = [0u8; 96]; // Uncompressed G1 point is 96 bytes
-        unsafe {
-            blst_p1_affine_serialize(serialized.as_mut_ptr(), &aggregated_affine);
-        }
-
-        // Create Signature from serialized bytes
-        let final_signature = Signature::from_bytes(&serialized)
-            .map_err(|e| anyhow::anyhow!("Failed to create final signature with error: {:?}", e))?;
+        let final_signature_bytes = combine_signatures_with_lagrange(&signatures, &lambdas)?;
+        let final_signature = Signature::from_bytes(&final_signature_bytes).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to construct final signature from combined bytes: {:?}",
+                e
+            )
+        })?;
 
         Ok(final_signature)
     }
@@ -420,16 +263,9 @@ impl ThresholdBLS {
     /// # Returns
     /// Ok(()) if signature is valid, Error otherwise
     pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> Result<()> {
-        let result = signature.verify(true, message, DST, &[], public_key, true);
-
-        if result == BLST_ERROR::BLST_SUCCESS {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
-                "Signature verification failed: {:?}",
-                result
-            ))
-        }
+        let pk_bytes = public_key.to_bytes();
+        let sig_bytes = signature.to_bytes();
+        verify_signature_bytes(&pk_bytes, message, &sig_bytes)
     }
 }
 
@@ -494,7 +330,9 @@ mod tests {
         assert_eq!(shares.len(), 5);
 
         // Reconstruct from first 3 shares
-        let reconstructed = shamir.reconstruct(&shares[..3]);
+        let reconstructed = shamir
+            .reconstruct(&shares[..3])
+            .expect("Reconstruction failed");
 
         println!("Shamir's Secret Sharing test passed");
         assert_eq!(reconstructed, secret);
@@ -523,5 +361,115 @@ mod tests {
         ThresholdBLS::verify(&master_pk, message, &signature).expect("Verification failed");
 
         println!("✓ Threshold signature test passed!");
+    }
+
+    #[test]
+    fn test_verify_rejects_wrong_message() {
+        let mut rng = thread_rng();
+        let scheme = ThresholdBLS::new(3, 5);
+        let (master_pk, key_shares) = scheme
+            .trusted_setup(&mut rng)
+            .expect("Key generation failed");
+
+        let signed_message = b"Signed message";
+        let wrong_message = b"Wrong message";
+        let partial_sigs: Vec<_> = key_shares
+            .iter()
+            .take(3)
+            .map(|share| {
+                ThresholdBLS::partial_sign(share, signed_message).expect("Partial signing failed")
+            })
+            .collect();
+        let signature = scheme.aggregate(&partial_sigs).expect("Aggregation failed");
+
+        let result = ThresholdBLS::verify(&master_pk, wrong_message, &signature);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aggregate_rejects_zero_participant_id() {
+        let mut rng = thread_rng();
+        let scheme = ThresholdBLS::new(3, 5);
+        let (_, key_shares) = scheme
+            .trusted_setup(&mut rng)
+            .expect("Key generation failed");
+
+        let message = b"Test message";
+        let mut partial_sigs: Vec<_> = key_shares
+            .iter()
+            .take(3)
+            .map(|share| {
+                ThresholdBLS::partial_sign(share, message).expect("Partial signing failed")
+            })
+            .collect();
+
+        partial_sigs[0].id = 0;
+        let result = scheme.aggregate(&partial_sigs);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_shamir_reconstruct_rejects_duplicate_x_coordinates() {
+        let shamir = ShamirSharing::new(2, 3);
+        let duplicate = Scalar::from_u64(9);
+        let shares = vec![
+            Share {
+                x: duplicate.clone(),
+                y: Scalar::from_u64(5),
+            },
+            Share {
+                x: duplicate,
+                y: Scalar::from_u64(7),
+            },
+        ];
+
+        let result = shamir.reconstruct(&shares);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aggregate_rejects_duplicate_participant_ids() {
+        let mut rng = thread_rng();
+        let scheme = ThresholdBLS::new(3, 5);
+
+        let (_, key_shares) = scheme
+            .trusted_setup(&mut rng)
+            .expect("Key generation failed");
+
+        let message = b"Test message";
+        let mut partial_sigs: Vec<_> = key_shares
+            .iter()
+            .take(3)
+            .map(|share| {
+                ThresholdBLS::partial_sign(share, message).expect("Partial signing failed")
+            })
+            .collect();
+
+        partial_sigs[1].id = partial_sigs[0].id;
+
+        let result = scheme.aggregate(&partial_sigs);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aggregate_requires_exact_threshold_signatures() {
+        let mut rng = thread_rng();
+        let scheme = ThresholdBLS::new(3, 5);
+
+        let (_, key_shares) = scheme
+            .trusted_setup(&mut rng)
+            .expect("Key generation failed");
+
+        let message = b"Test message";
+        let partial_sigs: Vec<_> = key_shares
+            .iter()
+            .take(4)
+            .map(|share| {
+                ThresholdBLS::partial_sign(share, message).expect("Partial signing failed")
+            })
+            .collect();
+
+        let result = scheme.aggregate(&partial_sigs);
+        assert!(result.is_err());
     }
 }

@@ -5,6 +5,8 @@ version = "0.1.0"
 
 [dependencies]
 anyhow.workspace = true
+blake3.workspace = true
 blst             = "0.3.16"
 hex.workspace    = true
 rand.workspace   = true
+rkyv.workspace   = true

@@ -3,10 +3,7 @@ use std::hash::{Hash, Hasher};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::{
-    crypto::{
-        aggregated::{BlsPublicKey, BlsSignature, PeerId},
-        conversions::ArkSerdeWrapper,
-    },
+    crypto::aggregated::{BlsPublicKey, BlsSignature, PeerId},
     state::peer::PeerSet,
 };
 
@@ -23,7 +20,6 @@ pub struct Nullify {
     /// The Peer ID of the leader for the current view
     pub leader_id: PeerId,
     /// The signature of the nullify message
-    #[rkyv(with = ArkSerdeWrapper)]
     pub signature: BlsSignature,
     /// The Peer ID of the peer that is sending the nullify message
     pub peer_id: PeerId,
@@ -77,7 +73,6 @@ pub struct Nullification<const N: usize, const F: usize, const M_SIZE: usize> {
     pub leader_id: PeerId,
     /// The aggregated signature of the nullification by the peers that have nullified the view.
     /// The signature signs the blake3 hash of the view number and the leader's Peer ID.
-    #[rkyv(with = ArkSerdeWrapper)]
     pub aggregated_signature: BlsSignature,
     /// The peer IDs of the replicas that have nullified the view
     pub peer_ids: [PeerId; M_SIZE],
@@ -102,14 +97,19 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> Nullification<N, F, M_
         let public_keys = self
             .peer_ids
             .iter()
-            .map(|peer_id| {
-                peer_set
-                    .get_public_key(peer_id)
-                    .expect("Peer ID not found in peer set")
-                    .clone()
-            })
+            .filter_map(|peer_id| peer_set.get_public_key(peer_id).ok().cloned())
             .collect::<Vec<BlsPublicKey>>();
+
+        if public_keys.len() != self.peer_ids.len() {
+            return false;
+        }
+
         let hash = blake3::hash(&[self.view.to_le_bytes(), self.leader_id.to_le_bytes()].concat());
-        BlsPublicKey::aggregate(&public_keys).verify(hash.as_bytes(), &self.aggregated_signature)
+        BlsPublicKey::verify_threshold(
+            &public_keys,
+            &self.peer_ids,
+            hash.as_bytes(),
+            &self.aggregated_signature,
+        )
     }
 }

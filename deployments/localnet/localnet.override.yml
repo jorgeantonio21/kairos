@@ -1,0 +1,96 @@
+services:
+  validator-0:
+    ports:
+      - "50051:50051"
+      - "9090:9090"
+      - "9000:9000"
+      - "8080:8080"
+    environment:
+      - NODE_VISUALIZER__ENABLED=true
+      - NODE_VISUALIZER__LISTEN_ADDRESS=0.0.0.0:8080
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
+
+  validator-1:
+    ports:
+      - "50052:50051"
+      - "9092:9090"
+      - "9001:9000"
+      - "8081:8080"
+    environment:
+      - NODE_VISUALIZER__ENABLED=true
+      - NODE_VISUALIZER__LISTEN_ADDRESS=0.0.0.0:8080
+    networks:
+      default:
+        ipv4_address: 172.30.0.11
+
+  validator-2:
+    ports:
+      - "50053:50051"
+      - "9093:9090"
+      - "9002:9000"
+      - "8082:8080"
+    environment:
+      - NODE_VISUALIZER__ENABLED=true
+      - NODE_VISUALIZER__LISTEN_ADDRESS=0.0.0.0:8080
+    networks:
+      default:
+        ipv4_address: 172.30.0.12
+
+  validator-3:
+    ports:
+      - "50054:50051"
+      - "9094:9090"
+      - "9003:9000"
+      - "8083:8080"
+    environment:
+      - NODE_VISUALIZER__ENABLED=true
+      - NODE_VISUALIZER__LISTEN_ADDRESS=0.0.0.0:8080
+    networks:
+      default:
+        ipv4_address: 172.30.0.13
+
+  validator-4:
+    ports:
+      - "50055:50051"
+      - "9095:9090"
+      - "9004:9000"
+      - "8084:8080"
+    environment:
+      - NODE_VISUALIZER__ENABLED=true
+      - NODE_VISUALIZER__LISTEN_ADDRESS=0.0.0.0:8080
+    networks:
+      default:
+        ipv4_address: 172.30.0.14
+
+  validator-5:
+    ports:
+      - "50056:50051"
+      - "9096:9090"
+      - "9005:9000"
+      - "8085:8080"
+    environment:
+      - NODE_VISUALIZER__ENABLED=true
+      - NODE_VISUALIZER__LISTEN_ADDRESS=0.0.0.0:8080
+    networks:
+      default:
+        ipv4_address: 172.30.0.15
+
+  prometheus:
+    depends_on:
+      validator-0:
+        condition: service_started
+
+  grafana:
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_healthy
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

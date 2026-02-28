@@ -224,6 +224,11 @@ core/
 │   └── src/
 │       ├── network.rs  # Iroh-based networking
 │       └── protocols/  # Consensus, gossip, sync protocols
+├── visualizer/         # Embedded web UI for consensus visualization
+│   └── src/
+│       ├── lib.rs             # DashboardMetrics, ViewSlot, diff logic
+│       ├── server.rs          # axum SSE + REST + static serving
+│       └── static/            # HTML/JS/CSS (embedded at compile time)
 ├── tests/              # Integration and E2E tests
 │   └── src/
 │       ├── e2e_consensus/
@@ -470,6 +475,247 @@ The node exposes a gRPC API for external interaction:
 | `NodeService` | `GetStatus`, `GetPeers`, `GetHealth` |
 | `SubscriptionService` | `SubscribeBlocks`, `SubscribeTransactions` |
 
+## Consensus Visualizer
+
+The consensus visualizer is an embedded web dashboard that provides real-time visibility into the Minimmit consensus protocol. It shows view progression, vote accumulation, M/L-notarizations, and nullifications as they happen. The dashboard is served directly from the node binary — no external dependencies, no build step, no npm.
+
+### How It Works
+
+The visualizer uses a lock-free shared data structure (`Arc<DashboardMetrics>`) between the consensus thread and an embedded axum HTTP server. The consensus thread writes atomic stores (~1ns each) on every state change. Connected browser clients receive updates via Server-Sent Events (SSE), where the server diffs snapshots every 100ms and pushes only the changes.
+
+```
+Consensus thread              axum HTTP server             Browser
+     │                             │                          │
+     │  Relaxed atomic stores      │                          │
+     ▼                             │                          │
+  ┌────────────────────────────────┐                          │
+  │   Arc<DashboardMetrics>        │  Relaxed atomic loads    │
+  │   256-slot ring buffer         │──────────────────────>   │
+  │   (view % 256)                 │  SSE diff every 100ms    │
+  └────────────────────────────────┘                          │
+                                                              │
+                                   GET /api/events ──> EventSource
+                                   GET /api/state  ──> JSON snapshot
+                                   GET /api/health ──> health check
+                                   GET /           ──> dashboard HTML
+```
+
+Zero allocation and zero blocking on the consensus hot path. The dashboard is entirely optional — when disabled (the default), there is no overhead.
+
+### Enabling the Visualizer
+
+#### Option 1: Configuration file
+
+Add a `[visualizer]` section to your node's TOML config:
+
+```toml
+[visualizer]
+enabled = true
+listen_address = "127.0.0.1:8080"
+```
+
+#### Option 2: Environment variables
+
+```bash
+NODE_VISUALIZER__ENABLED=true
+NODE_VISUALIZER__LISTEN_ADDRESS=127.0.0.1:8080
+```
+
+Then start the node normally and open the dashboard in a browser:
+
+```bash
+cargo run -p node -- --config config.toml
+# Dashboard available at http://127.0.0.1:8080
+```
+
+### Dashboard Tabs
+
+The dashboard has five tabs:
+
+**Overview** — High-level consensus state at a glance. Shows the current view number, finalized view number, and a horizontal strip of the last ~30 views as colored boxes. Each box represents a view:
+- Green: L-notarized (finalized)
+- Blue: M-notarized (view progressed but not yet finalized)
+- Red: Nullified (view failed)
+- Orange: Cascade nullified
+- Gray: In progress
+
+**Consensus Timeline** — Per-view detail with progress bars. Each row shows a view's vote progress (`vote_count / n`) with threshold markers at `2f+1` (M-notarization) and `n-f` (L-notarization), plus a nullify progress bar with its `2f+1` threshold. Status badges show the lifecycle: Proposed → Voting → M-Notarized → L-Notarized | Nullified.
+
+**Blocks** — Table of block proposals: view number, leader, block hash (truncated), transaction count, status, and timestamp.
+
+**Notarizations** — Three sections showing M-notarizations (blue), L-notarizations (green), and nullifications (red) with their respective metadata.
+
+**Logs** — Real-time event stream. Every SSE event is rendered as a color-coded log entry. Auto-scrolls by default with a pause toggle.
+
+### REST & SSE API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/` | Dashboard HTML page |
+| GET | `/static/app.js` | Dashboard JavaScript |
+| GET | `/static/style.css` | Dashboard stylesheet |
+| GET | `/api/events` | SSE stream (diff-based, 100ms interval) |
+| GET | `/api/state` | Full JSON snapshot of all active view slots |
+| GET | `/api/health` | Current view, finalized view, node N/F |
+
+The SSE stream emits JSON events with a `kind` field:
+
+```json
+{"kind":"current_view_changed","view":42}
+{"kind":"view_started","view":42,"leader":3,"timestamp":1740000000000}
+{"kind":"vote_count_changed","view":42,"count":4}
+{"kind":"m_notarization","view":42,"timestamp":1740000000050,"block_hash":"a1b2c3...","vote_count":3}
+{"kind":"l_notarization","view":42,"timestamp":1740000000100,"block_hash":"a1b2c3...","vote_count":5}
+{"kind":"nullification","view":42,"timestamp":1740000000200,"nullify_count":3}
+{"kind":"block_proposed","view":42,"block_hash":"a1b2c3...","tx_count":10}
+```
+
+You can consume the SSE stream programmatically with `curl`:
+
+```bash
+curl -N http://127.0.0.1:8080/api/events
+```
+
+Or fetch a one-time snapshot:
+
+```bash
+curl -s http://127.0.0.1:8080/api/state | jq .
+```
+
+### Running a Local 6-Node Network with Visualizers
+
+Each validator in a local network can run its own visualizer on a different port. This lets you observe consensus from every node's perspective simultaneously.
+
+#### Using per-node config files
+
+The local config files live in `node/config/`. To enable the visualizer on each node, add a `[visualizer]` section to each `node/config/nodeN.toml`. Each node must use a unique port:
+
+| Node | Config file | Visualizer address | Dashboard URL |
+|------|-------------|--------------------|---------------|
+| node0 | `node/config/node0.toml` | `127.0.0.1:8080` | http://127.0.0.1:8080 |
+| node1 | `node/config/node1.toml` | `127.0.0.1:8081` | http://127.0.0.1:8081 |
+| node2 | `node/config/node2.toml` | `127.0.0.1:8082` | http://127.0.0.1:8082 |
+| node3 | `node/config/node3.toml` | `127.0.0.1:8083` | http://127.0.0.1:8083 |
+| node4 | `node/config/node4.toml` | `127.0.0.1:8084` | http://127.0.0.1:8084 |
+| node5 | `node/config/node5.toml` | `127.0.0.1:8085` | http://127.0.0.1:8085 |
+
+Add the following to each config file (adjusting the port per node):
+
+```toml
+# node/config/node0.toml
+[visualizer]
+enabled = true
+listen_address = "127.0.0.1:8080"
+```
+
+```toml
+# node/config/node1.toml
+[visualizer]
+enabled = true
+listen_address = "127.0.0.1:8081"
+```
+
+And so on for nodes 2–5.
+
+Then start each node in a separate terminal:
+
+```bash
+# Terminal 1
+cargo run -p node -- --config node/config/node0.toml
+
+# Terminal 2
+cargo run -p node -- --config node/config/node1.toml
+
+# Terminal 3
+cargo run -p node -- --config node/config/node2.toml
+
+# Terminal 4
+cargo run -p node -- --config node/config/node3.toml
+
+# Terminal 5
+cargo run -p node -- --config node/config/node4.toml
+
+# Terminal 6
+cargo run -p node -- --config node/config/node5.toml
+```
+
+Open all six dashboards side-by-side:
+
+```bash
+open http://127.0.0.1:8080 http://127.0.0.1:8081 http://127.0.0.1:8082 \
+     http://127.0.0.1:8083 http://127.0.0.1:8084 http://127.0.0.1:8085
+```
+
+#### Using environment variables (no config file edits)
+
+If you don't want to edit the TOML files, override via environment variables. Each node needs its own unique `LISTEN_ADDRESS`:
+
+```bash
+# Terminal 1
+NODE_VISUALIZER__ENABLED=true NODE_VISUALIZER__LISTEN_ADDRESS=127.0.0.1:8080 \
+  cargo run -p node -- --config node/config/node0.toml
+
+# Terminal 2
+NODE_VISUALIZER__ENABLED=true NODE_VISUALIZER__LISTEN_ADDRESS=127.0.0.1:8081 \
+  cargo run -p node -- --config node/config/node1.toml
+
+# ... and so on for nodes 2-5 with ports 8082-8085
+```
+
+#### Docker Compose localnet
+
+Use the prebuilt 6-node localnet profile in `deployments/localnet/localnet.override.yml`.
+It already includes:
+
+- static validator container IPs (`172.30.0.10` .. `172.30.0.15`) for stable P2P addressing
+- visualizer enablement and host ports (`8080` .. `8085`)
+- per-node metrics ports (`9090`, `9092` .. `9096`)
+
+Start localnet:
+
+```bash
+./deployments/localnet/generate-keys.sh --clean
+docker build -f deployments/Dockerfile -t kairos-node:latest .
+docker compose \
+  -f deployments/localnet/docker-compose.yml \
+  -f deployments/localnet/localnet.override.yml \
+  up -d
+```
+
+Open node visualizers:
+
+```bash
+open http://127.0.0.1:8080  # validator-0
+open http://127.0.0.1:8081  # validator-1
+open http://127.0.0.1:8082  # validator-2
+open http://127.0.0.1:8083  # validator-3
+open http://127.0.0.1:8084  # validator-4
+open http://127.0.0.1:8085  # validator-5
+```
+
+Open observability:
+
+```bash
+open http://127.0.0.1:3000  # Grafana
+open http://127.0.0.1:9091  # Prometheus
+```
+
+### What to Look For
+
+When observing a healthy network across multiple dashboards:
+
+- **Vote progress bars** fill to the `2f+1` marker (M-notarization) quickly, then continue filling toward `n-f` (L-notarization).
+- **View strip** shows a sequence of green boxes (L-notarized views) with the occasional blue (M-notarized but not yet finalized) at the head.
+- **Finalized view** increases steadily, staying within a few views of the current view.
+- **All nodes agree** on the same finalized view number and show the same block hashes for finalized views.
+
+Potential issues to diagnose:
+
+- **Red boxes (nullifications)**: A view timed out or the leader was faulty. Occasional reds are normal; clusters of reds indicate network issues or a Byzantine leader.
+- **Orange boxes (cascade nullifications)**: A past view was nullified after nodes had already progressed. Check the Logs tab for the cascade trigger view.
+- **Vote progress stuck below `2f+1`**: A node may be partitioned from the network or a peer is not voting.
+- **Finalized view divergence between nodes**: Nodes are seeing different L-notarizations. This should not happen in a correctly operating network and warrants investigation.
+
 ## Testing
 
 ```bash
@@ -515,7 +761,7 @@ for local development and testing. See [deployments/README.md](deployments/READM
 for full documentation.
 
 - **Single node:** `docker compose -f deployments/docker-compose.yml up`
-- **6-validator localnet:** `cd deployments/localnet && docker compose up`
+- **6-validator localnet:** `docker compose -f deployments/localnet/docker-compose.yml -f deployments/localnet/localnet.override.yml up -d`
 - **Docker images:**
   - **Linux/CI:** `nix build .#dockerImage && docker load < result` (minimal ~50MB image)
   - **macOS:** `docker build -f deployments/Dockerfile -t kairos-node:latest .`
@@ -530,6 +776,7 @@ for full documentation.
 | Observability (Prometheus + Loki + Grafana) | ✅ |
 | Alerting rules (Prometheus) | ✅ |
 | Nix-built Docker images (GHCR) | ✅ |
+| Consensus Visualizer (embedded web UI) | ✅ |
 | Terraform (AWS/GCP cloud deployment) | 🔜 Planned |
 | Kubernetes (Helm charts) | 🔜 Planned |
 

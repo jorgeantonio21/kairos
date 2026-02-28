@@ -1,0 +1,13 @@
+[package]
+edition = "2024"
+name    = "visualizer"
+version = "0.1.0"
+
+[dependencies]
+anyhow       = { workspace = true }
+async-stream = { workspace = true }
+axum         = { workspace = true }
+serde        = { workspace = true, features = [ "derive" ] }
+serde_json   = { workspace = true }
+tokio        = { workspace = true }
+tokio-stream = { workspace = true }

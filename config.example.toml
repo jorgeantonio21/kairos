@@ -212,6 +212,20 @@ bls_secret_key_path = "/etc/kairos/keys/bls.key"
 ed25519_secret_key_path = "/etc/kairos/keys/ed25519.key"
 
 # -----------------------------------------------------------------------------
+# VISUALIZER CONFIGURATION
+# -----------------------------------------------------------------------------
+# Embedded web UI for real-time consensus state visualization.
+# Shows view progression, vote accumulation, M/L-notarizations, and nullifications.
+
+[visualizer]
+# Enable the visualizer HTTP server.
+enabled = false
+
+# Socket address for the visualizer dashboard.
+# Open this URL in a browser to view consensus state in real-time.
+listen_address = "127.0.0.1:8080"
+
+# -----------------------------------------------------------------------------
 # METRICS CONFIGURATION
 # -----------------------------------------------------------------------------
 # Prometheus metrics exporter. When enabled, exposes a /metrics HTTP endpoint.

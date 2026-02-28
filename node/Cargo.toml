@@ -28,6 +28,7 @@ slog-json                   = { workspace = true }
 slog-term                   = { workspace = true }
 tempfile                    = { workspace = true }
 tokio                       = { workspace = true }
+visualizer                  = { workspace = true }
 
 # Async runtime for P2P
 commonware-runtime = { workspace = true }

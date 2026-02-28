@@ -32,6 +32,7 @@ tempfile      = { workspace = true }
 thiserror     = { workspace = true }
 tokio         = { workspace = true, features = [ "sync" ] }
 validator     = { workspace = true, features = [ "derive" ] }
+visualizer    = { workspace = true }
 zeroize       = { workspace = true }
 
 [dev-dependencies]

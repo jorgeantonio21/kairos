@@ -155,6 +155,7 @@ fn test_e2e_consensus_happy_path() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -542,6 +543,7 @@ fn test_e2e_consensus_continuous_load() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -924,6 +926,7 @@ fn test_e2e_consensus_with_crashed_replica() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -1419,6 +1422,7 @@ fn test_e2e_consensus_with_equivocating_leader() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -2112,6 +2116,7 @@ fn test_e2e_consensus_with_persistent_equivocating_leader() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -2730,6 +2735,7 @@ fn test_e2e_consensus_functional_blockchain() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -3280,6 +3286,7 @@ fn test_e2e_consensus_invalid_tx_rejection() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -3907,6 +3914,7 @@ fn test_e2e_consensus_with_invalid_block_from_leader() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");
@@ -4257,6 +4265,7 @@ fn test_e2e_consensus_with_true_equivocation() {
             setup.persistence_writer,
             DEFAULT_TICK_INTERVAL,
             Arc::new(ConsensusMetrics::new()),
+            None,
             replica_logger,
         )
         .expect("Failed to create consensus engine");

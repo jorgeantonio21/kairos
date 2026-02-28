@@ -84,6 +84,10 @@ pub struct NodeConfig {
     /// Logging configuration.
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// Consensus visualizer configuration.
+    #[serde(default)]
+    pub visualizer: VisualizerConfig,
 }
 
 /// Prometheus metrics exporter configuration.
@@ -132,6 +136,24 @@ impl Default for LoggingConfig {
             format: LogFormat::Terminal,
             level: "info".to_string(),
             file: None,
+        }
+    }
+}
+
+/// Consensus visualizer embedded web UI configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisualizerConfig {
+    /// Enable the visualizer HTTP server.
+    pub enabled: bool,
+    /// Socket address for the visualizer (serves dashboard + SSE).
+    pub listen_address: SocketAddr,
+}
+
+impl Default for VisualizerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_address: "127.0.0.1:8080".parse().unwrap(),
         }
     }
 }

@@ -8,6 +8,30 @@
     "to": "now"
   },
   "refresh": "5s",
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Validator",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": {
+          "query": "label_values(consensus_current_view, instance)",
+          "refId": "Prometheus-instance-Variable-Query"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "text": "All",
+          "value": ".*",
+          "selected": true
+        }
+      }
+    ]
+  },
   "schemaVersion": 39,
   "panels": [
     {
@@ -18,7 +42,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "consensus_current_view",
+          "expr": "max(consensus_current_view{instance=~\"$instance\"})",
           "refId": "A"
         }
       ],
@@ -48,7 +72,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "consensus_finalized_view",
+          "expr": "min(consensus_finalized_view{instance=~\"$instance\"})",
           "refId": "A"
         }
       ],
@@ -78,7 +102,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "consensus_views_since_finalization",
+          "expr": "max(consensus_views_since_finalization{instance=~\"$instance\"})",
           "refId": "A"
         }
       ],
@@ -111,7 +135,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(consensus_blocks_finalized_total[1m])",
+          "expr": "sum(rate(consensus_blocks_finalized_total{instance=~\"$instance\"}[1m]))",
           "legendFormat": "blocks/s",
           "refId": "A"
         }
@@ -136,12 +160,12 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.5, rate(consensus_finalization_latency_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(consensus_finalization_latency_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, rate(consensus_finalization_latency_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(consensus_finalization_latency_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p99",
           "refId": "B"
         }
@@ -166,7 +190,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(consensus_nullifications_total[1m])",
+          "expr": "sum(rate(consensus_nullifications_total{instance=~\"$instance\"}[1m]))",
           "legendFormat": "nullifications/s",
           "refId": "A"
         }
@@ -191,7 +215,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(consensus_cascade_nullifications_total[1m])",
+          "expr": "sum(rate(consensus_cascade_nullifications_total{instance=~\"$instance\"}[1m]))",
           "legendFormat": "cascade/s",
           "refId": "A"
         }
@@ -216,7 +240,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(consensus_messages_processed_total[1m])",
+          "expr": "sum by (type) (rate(consensus_messages_processed_total{instance=~\"$instance\"}[1m]))",
           "legendFormat": "{{type}}",
           "refId": "A"
         }
@@ -244,7 +268,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, rate(consensus_message_processing_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(consensus_message_processing_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p99",
           "refId": "A"
         }
@@ -269,12 +293,12 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "consensus_mempool_pending_count",
+          "expr": "sum(consensus_mempool_pending_count{instance=~\"$instance\"})",
           "legendFormat": "pending",
           "refId": "A"
         },
         {
-          "expr": "consensus_mempool_queued_count",
+          "expr": "sum(consensus_mempool_queued_count{instance=~\"$instance\"})",
           "legendFormat": "queued",
           "refId": "B"
         }
@@ -298,7 +322,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(consensus_transactions_received_total[1m])",
+          "expr": "sum(rate(consensus_transactions_received_total{instance=~\"$instance\"}[1m]))",
           "legendFormat": "tx/s",
           "refId": "A"
         }
@@ -323,7 +347,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "consensus_ring_buffer_utilization",
+          "expr": "max by (channel) (consensus_ring_buffer_utilization{instance=~\"$instance\"})",
           "legendFormat": "{{channel}}",
           "refId": "A"
         }
@@ -348,7 +372,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, rate(consensus_tick_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(consensus_tick_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p99",
           "refId": "A"
         }

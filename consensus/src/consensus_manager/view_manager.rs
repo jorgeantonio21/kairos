@@ -463,10 +463,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         // Create and persist genesis block
         let genesis_leader = leader_manager.leader_for_view(0)?.peer_id();
         let genesis_block_hash = Block::genesis_hash();
-        let genesis_block = Block::genesis(
-            genesis_leader,
-            BlsSignature::default(),
-        );
+        let genesis_block = Block::genesis(genesis_leader, BlsSignature::default());
         debug_assert_eq!(genesis_block.get_hash(), genesis_block_hash);
 
         persistence_writer.put_finalized_block(&genesis_block)?;

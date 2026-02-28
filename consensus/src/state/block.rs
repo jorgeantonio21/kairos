@@ -412,16 +412,7 @@ mod tests {
         // Generate transaction(s) ONCE
         let txs: Vec<Arc<Transaction>> = (0..1).map(|_| Arc::new(gen_tx())).collect();
 
-        let mut b = Block::new(
-            8,
-            0,
-            parent,
-            txs.clone(),
-            222,
-            leader_signature,
-            false,
-            8,
-        );
+        let mut b = Block::new(8, 0, parent, txs.clone(), 222, leader_signature, false, 8);
         // Simulate an archived block with hash = None
         b.hash = None;
         let bytes = serialize_for_db(&b).expect("serialize");

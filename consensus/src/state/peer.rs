@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::crypto::{
-    aggregated::{BlsPublicKey, PeerId},
-};
+use crate::crypto::aggregated::{BlsPublicKey, PeerId};
 
 /// [`Peer`] represents a peer in the consensus protocol.
 ///

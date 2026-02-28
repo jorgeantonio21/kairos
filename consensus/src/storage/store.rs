@@ -839,8 +839,7 @@ mod tests {
                 .collect::<Vec<PeerId>>()
                 .try_into()
                 .unwrap();
-            let agg =
-                AggregatedSignature::<M_SIZE>::new(pks, peer_ids, &msg, &sigs).expect("agg");
+            let agg = AggregatedSignature::<M_SIZE>::new(pks, peer_ids, &msg, &sigs).expect("agg");
             let m = MNotarization::<N, F, M_SIZE>::new(
                 6,
                 block.get_hash(),
@@ -918,20 +917,12 @@ mod tests {
                 .collect::<Vec<PeerId>>()
                 .try_into()
                 .unwrap();
-            let agg = AggregatedSignature::<M_SIZE>::new(
-                pks,
-                peer_ids,
-                msg.as_bytes(),
-                &[s1, s2, s3],
-            )
-            .expect("Failed to create aggregated signature");
+            let agg =
+                AggregatedSignature::<M_SIZE>::new(pks, peer_ids, msg.as_bytes(), &[s1, s2, s3])
+                    .expect("Failed to create aggregated signature");
 
-            let nullif = Nullification::<N, F, M_SIZE>::new(
-                view,
-                1,
-                agg.aggregated_signature,
-                peer_ids,
-            );
+            let nullif =
+                Nullification::<N, F, M_SIZE>::new(view, 1, agg.aggregated_signature, peer_ids);
             store.put_nullification(&nullif).unwrap();
 
             let fetched = store

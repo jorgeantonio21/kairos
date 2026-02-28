@@ -6,18 +6,11 @@ use rand::{CryptoRng, RngCore};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::bls::constants::{
-    BLS_PUBLIC_KEY_BYTES,
-    BLS_SECRET_KEY_BYTES,
-    BLS_SIGNATURE_BYTES,
-    PEER_ID_BYTES,
+    BLS_PUBLIC_KEY_BYTES, BLS_SECRET_KEY_BYTES, BLS_SIGNATURE_BYTES, PEER_ID_BYTES,
 };
 use crate::bls::ops::{
-    combine_public_keys_with_lagrange,
-    combine_signatures_with_lagrange,
-    generate_secret_key_bytes,
-    public_key_from_secret_key_bytes,
-    sign_with_secret_key_bytes,
-    verify_signature_bytes,
+    combine_public_keys_with_lagrange, combine_signatures_with_lagrange, generate_secret_key_bytes,
+    public_key_from_secret_key_bytes, sign_with_secret_key_bytes, verify_signature_bytes,
 };
 use crate::threshold_math::lagrange_coefficients_for_peer_ids;
 
@@ -38,8 +31,8 @@ impl BlsSecretKey {
     }
 
     pub fn public_key(&self) -> BlsPublicKey {
-        let pk_bytes = public_key_from_secret_key_bytes(&self.0)
-            .expect("Invalid BLS secret key bytes");
+        let pk_bytes =
+            public_key_from_secret_key_bytes(&self.0).expect("Invalid BLS secret key bytes");
         BlsPublicKey(pk_bytes)
     }
 
@@ -286,7 +279,8 @@ mod tests {
         let message = b"duplicate-peer-id";
 
         let ps0 = Scheme::partial_sign(&key_shares[FIRST_SELECTED_INDEX], message).expect("sign 0");
-        let ps1 = Scheme::partial_sign(&key_shares[SECOND_SELECTED_INDEX], message).expect("sign 1");
+        let ps1 =
+            Scheme::partial_sign(&key_shares[SECOND_SELECTED_INDEX], message).expect("sign 1");
         let partials = vec![
             (ps0.id, BlsSignature(ps0.signature.to_bytes())),
             (ps0.id, BlsSignature(ps1.signature.to_bytes())),
@@ -338,7 +332,8 @@ mod tests {
         let sk = BlsSecretKey::generate(&mut rng);
         let pk = sk.public_key();
         let sig = sk.sign(b"mismatch");
-        let result = BlsPublicKey::verify_threshold(&[pk], &[pk.to_peer_id(), 999], b"mismatch", &sig);
+        let result =
+            BlsPublicKey::verify_threshold(&[pk], &[pk.to_peer_id(), 999], b"mismatch", &sig);
         assert!(!result);
     }
 

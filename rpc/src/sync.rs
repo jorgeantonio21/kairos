@@ -401,14 +401,14 @@ mod tests {
 
     fn create_test_block(height: u64) -> Block {
         Block::new(
-            height,                                      // view
-            0,                                           // leader (PeerId)
-            [0u8; 32],                                   // parent_block_hash
-            vec![],                                      // transactions
-            0,                                           // timestamp
-            BlsSignature::default(),                     // leader_signature
-            true,                                        // is_finalized
-            height,                                      // height
+            height,                  // view
+            0,                       // leader (PeerId)
+            [0u8; 32],               // parent_block_hash
+            vec![],                  // transactions
+            0,                       // timestamp
+            BlsSignature::default(), // leader_signature
+            true,                    // is_finalized
+            height,                  // height
         )
     }
 

@@ -4,12 +4,10 @@ use rand::{CryptoRng, Rng};
 
 use crate::bls::constants::BLS_SIGNATURE_BYTES;
 use crate::bls::ops::{
-    combine_signatures_with_lagrange,
-    public_key_from_scalar,
-    sign_with_scalar,
+    combine_signatures_with_lagrange, public_key_from_scalar, sign_with_scalar,
     verify_signature_bytes,
 };
-use crate::threshold_math::{lagrange_coefficients_for_peer_ids, lagrange_coefficient_at_zero};
+use crate::threshold_math::{lagrange_coefficient_at_zero, lagrange_coefficients_for_peer_ids};
 use crate::{polynomial::Polynomial, scalar::Scalar};
 
 /// Share of a secret in Shamir's secret sharing scheme.
@@ -235,7 +233,10 @@ impl ThresholdBLS {
             ));
         }
 
-        let participant_ids: Vec<u64> = partial_signatures.iter().map(|partial| partial.id).collect();
+        let participant_ids: Vec<u64> = partial_signatures
+            .iter()
+            .map(|partial| partial.id)
+            .collect();
         let lambdas = lagrange_coefficients_for_peer_ids(&participant_ids)?;
         let signatures: Vec<[u8; BLS_SIGNATURE_BYTES]> = partial_signatures
             .iter()

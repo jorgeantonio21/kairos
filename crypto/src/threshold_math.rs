@@ -9,10 +9,14 @@ pub fn validate_unique_nonzero_peer_ids(peer_ids: &[u64]) -> Result<()> {
     let mut seen = HashSet::with_capacity(peer_ids.len());
     for peer_id in peer_ids {
         if *peer_id == INVALID_PEER_ID {
-            return Err(anyhow!("Peer ID {INVALID_PEER_ID} is invalid in threshold signatures"));
+            return Err(anyhow!(
+                "Peer ID {INVALID_PEER_ID} is invalid in threshold signatures"
+            ));
         }
         if !seen.insert(*peer_id) {
-            return Err(anyhow!("Duplicate peer ID in threshold signature set: {peer_id}"));
+            return Err(anyhow!(
+                "Duplicate peer ID in threshold signature set: {peer_id}"
+            ));
         }
     }
     Ok(())

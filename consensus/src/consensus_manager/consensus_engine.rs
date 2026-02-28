@@ -59,7 +59,7 @@
 //!         config::ConsensusConfig,
 //!     },
 //!     consensus::ConsensusMessage,
-//!     crypto::aggregated::BlsSecretKey,
+//!     crate::crypto::aggregated::BlsSecretKey,
 //!     storage::store::ConsensusStore,
 //!     validation::{PendingStateWriter, ValidatedBlock},
 //! };

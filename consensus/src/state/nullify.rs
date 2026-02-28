@@ -3,9 +3,7 @@ use std::hash::{Hash, Hasher};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::{
-    crypto::{
-        aggregated::{BlsPublicKey, BlsSignature, PeerId},
-    },
+    crypto::aggregated::{BlsPublicKey, BlsSignature, PeerId},
     state::peer::PeerSet,
 };
 

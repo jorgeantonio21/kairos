@@ -112,8 +112,8 @@ fn bench_aggregate(c: &mut Criterion) {
                     .copied()
                     .zip(ark_signatures.iter().copied())
                     .collect();
-                let aggregated =
-                    ArkSignature::combine_partials(black_box(&partials)).expect("Threshold combine failed");
+                let aggregated = ArkSignature::combine_partials(black_box(&partials))
+                    .expect("Threshold combine failed");
                 black_box(aggregated);
             });
         });
@@ -134,7 +134,8 @@ fn bench_aggregate(c: &mut Criterion) {
 fn bench_aggregate_verify(c: &mut Criterion) {
     let mut group = c.benchmark_group("bls/aggregate_verify");
 
-    let (ark_public_keys, ark_peer_ids, ark_signatures) = ark_keys_and_signatures(AGG_VERIFY_N, MESSAGE);
+    let (ark_public_keys, ark_peer_ids, ark_signatures) =
+        ark_keys_and_signatures(AGG_VERIFY_N, MESSAGE);
     let ark_public_key_array: [ArkPublicKey; AGG_VERIFY_N] =
         std::array::from_fn(|i| ark_public_keys[i]);
     let ark_peer_id_array: [u64; AGG_VERIFY_N] = std::array::from_fn(|i| ark_peer_ids[i]);
@@ -143,7 +144,8 @@ fn bench_aggregate_verify(c: &mut Criterion) {
         .copied()
         .zip(ark_signatures.iter().copied())
         .collect();
-    let ark_aggregated = ArkSignature::combine_partials(&ark_partials).expect("Threshold combine failed");
+    let ark_aggregated =
+        ArkSignature::combine_partials(&ark_partials).expect("Threshold combine failed");
 
     let mut blst_rng = StdRng::from_seed([41u8; 32]);
     let blst_scheme = ThresholdBLS::new(AGG_VERIFY_N, AGG_VERIFY_N);
@@ -153,7 +155,9 @@ fn bench_aggregate_verify(c: &mut Criterion) {
     let blst_partials: Vec<_> = blst_key_shares
         .iter()
         .take(AGG_VERIFY_N)
-        .map(|share| ThresholdBLS::partial_sign(share, MESSAGE).expect("BLST partial signing failed"))
+        .map(|share| {
+            ThresholdBLS::partial_sign(share, MESSAGE).expect("BLST partial signing failed")
+        })
         .collect();
     let blst_aggregated = blst_scheme
         .aggregate(&blst_partials)

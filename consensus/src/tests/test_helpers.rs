@@ -221,7 +221,7 @@ impl TestFixture {
         // Generate keypairs for all replicas
         for _ in 0..n {
             let keypair = KeyPair::generate();
-            public_keys.push(keypair.public_key.clone());
+            public_keys.push(keypair.public_key);
             keypairs.push(keypair);
         }
 

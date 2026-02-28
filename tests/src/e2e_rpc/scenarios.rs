@@ -330,7 +330,7 @@ fn test_rpc_node_sync_from_validators() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -621,7 +621,7 @@ fn test_rpc_node_grpc_block_queries() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -1045,7 +1045,7 @@ fn test_multiple_rpc_nodes() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -1370,7 +1370,7 @@ fn test_rpc_node_l_notarization_queries() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 

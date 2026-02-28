@@ -360,7 +360,7 @@ mod tests {
             parent,
             txs.clone(),
             123456,
-            leader_signature.clone(),
+            leader_signature,
             false,
             1,
         );
@@ -375,7 +375,7 @@ mod tests {
         let parent = [2u8; blake3::OUT_LEN];
         let sk = BlsSecretKey::generate(&mut thread_rng());
         let leader_signature = sk.sign(b"block proposal");
-        let b1 = gen_block(6, 0, parent, 2, 999, leader_signature.clone(), 2);
+        let b1 = gen_block(6, 0, parent, 2, 999, leader_signature, 2);
         let b2 = gen_block(6, 0, parent, 2, 999, leader_signature, 2);
         assert_ne!(b1.get_hash(), b2.get_hash());
         assert_ne!(b1, b2);
@@ -386,7 +386,7 @@ mod tests {
         let parent = [3u8; blake3::OUT_LEN];
         let sk = BlsSecretKey::generate(&mut thread_rng());
         let leader_signature = sk.sign(b"block proposal");
-        let b1 = gen_block(7, 0, parent, 2, 111, leader_signature.clone(), 3);
+        let b1 = gen_block(7, 0, parent, 2, 111, leader_signature, 3);
         let b2 = gen_block(7, 0, parent, 2, 111, leader_signature, 3);
         assert_ne!(b1.get_hash(), b2.get_hash());
     }
@@ -418,7 +418,7 @@ mod tests {
             parent,
             txs.clone(),
             222,
-            leader_signature.clone(),
+            leader_signature,
             false,
             8,
         );

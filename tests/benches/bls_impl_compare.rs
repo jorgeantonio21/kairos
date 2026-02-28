@@ -136,7 +136,7 @@ fn bench_aggregate_verify(c: &mut Criterion) {
 
     let (ark_public_keys, ark_peer_ids, ark_signatures) = ark_keys_and_signatures(AGG_VERIFY_N, MESSAGE);
     let ark_public_key_array: [ArkPublicKey; AGG_VERIFY_N] =
-        std::array::from_fn(|i| ark_public_keys[i].clone());
+        std::array::from_fn(|i| ark_public_keys[i]);
     let ark_peer_id_array: [u64; AGG_VERIFY_N] = std::array::from_fn(|i| ark_peer_ids[i]);
     let ark_partials: Vec<_> = ark_peer_ids
         .iter()

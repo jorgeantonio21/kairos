@@ -188,7 +188,7 @@ pub fn create_gossip_test_network(
     for _i in 0..num_nodes {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 

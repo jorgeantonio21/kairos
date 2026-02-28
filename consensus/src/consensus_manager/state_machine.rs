@@ -863,7 +863,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         let leader_signature = self.secret_key.sign(&block_hash);
 
         // Update the block with the true leader signature.
-        block.leader_signature = leader_signature.clone();
+        block.leader_signature = leader_signature;
 
         // Update dashboard with block proposal info
         if let Some(ref db) = self.dashboard {
@@ -960,7 +960,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         let vote = Vote::new(
             view,
             block_hash,
-            vote_signature.clone(),
+            vote_signature,
             self.view_manager.replica_id(),
             leader_id,
         );

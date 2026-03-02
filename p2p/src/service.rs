@@ -722,8 +722,9 @@ mod tests {
             false,
             1,
         );
-        let p2p_msg =
-            P2PMessage::Consensus(ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block2.into()));
+        let p2p_msg = P2PMessage::Consensus(ConsensusMessage::<N, F, M_SIZE>::BlockProposal(
+            block2.into(),
+        ));
         let bytes = crate::message::serialize_message(&p2p_msg).unwrap();
 
         let result = route_incoming_message::<N, F, M_SIZE>(

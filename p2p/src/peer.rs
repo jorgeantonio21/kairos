@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use consensus::crypto::aggregated::PeerId;
+use consensus::crypto::consensus_bls::PeerId;
 
 /// Registry mapping network identities to consensus peer IDs.
 ///

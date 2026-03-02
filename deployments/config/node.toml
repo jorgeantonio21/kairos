@@ -80,6 +80,13 @@ total_validators       = 6
 bls_secret_key_path     = "/etc/kairos/keys/bls.key"
 ed25519_secret_key_path = "/etc/kairos/keys/ed25519.key"
 
+[threshold_setup]
+mode                                       = "enabled"
+artifact_path                              = "/data/threshold/validator-0.threshold_setup.json"
+validator_set_id                           = "kairos-local-vs-1"
+expected_m_nullify_group_public_key        = "8440888581e978a4c677114271538efc5e8a66491b29d27cfc01712e35e658ee9f74769c0ec0bd6d3eccf92a218ecb360e1c5c5839163f2d46bdf4069b32158dcbc2080ff5068915946f532e2e16ea97a7f5a4dc01fe69b306fee004b958ae38"
+expected_l_notarization_group_public_key   = "88406a1e2d62154defe1f5ea4f1876a8608b168bbe9451c8feb3861122a69e6b402aa505026404a03ba20acfcd3be4c511ced33ec510f11e30ae4a2db7473309a7309dd8f940f19e6a762939d22207c61d7ce289e1559de53e60b4e584fb503f"
+
 [metrics]
 enabled        = true
 listen_address = "0.0.0.0:9090"

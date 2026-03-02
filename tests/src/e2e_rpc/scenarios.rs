@@ -42,7 +42,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ark_serialize::CanonicalSerialize;
 use commonware_runtime::tokio::Runner as TokioRunner;
 use commonware_runtime::{Clock, Runner};
 use consensus::{
@@ -50,7 +49,7 @@ use consensus::{
         config::{ConsensusConfig, GenesisAccount},
         consensus_engine::ConsensusEngine,
     },
-    crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+    crypto::{consensus_bls::BlsSecretKey, transaction_crypto::TxSecretKey},
     mempool::MempoolService,
     metrics::ConsensusMetrics,
     state::{address::Address, peer::PeerSet, transaction::Transaction},
@@ -236,6 +235,7 @@ fn create_validator_node_setup<const N: usize, const F: usize, const M_SIZE: usi
         consensus_config,
         peer_id,
         bls_secret_key,
+        None,
         consensus_msg_consumer,
         broadcast_notify,
         broadcast_producer,
@@ -331,7 +331,7 @@ fn test_rpc_node_sync_from_validators() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -341,7 +341,7 @@ fn test_rpc_node_sync_from_validators() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -404,7 +404,7 @@ fn test_rpc_node_sync_from_validators() {
             let ed25519_pk = identity.ed25519_public_key();
             let bls_pk = identity.bls_public_key();
             let mut bls_bytes = Vec::new();
-            bls_pk.0.serialize_compressed(&mut bls_bytes).unwrap();
+            bls_pk.serialize_compressed(&mut bls_bytes).unwrap();
             ValidatorPeerInfo {
                 ed25519_public_key: hex::encode(ed25519_pk.as_ref()),
                 bls_peer_id: identity.peer_id(),
@@ -622,7 +622,7 @@ fn test_rpc_node_grpc_block_queries() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -632,7 +632,7 @@ fn test_rpc_node_grpc_block_queries() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -710,7 +710,7 @@ fn test_rpc_node_grpc_block_queries() {
             let ed25519_pk = identity.ed25519_public_key();
             let bls_pk = identity.bls_public_key();
             let mut bls_bytes = Vec::new();
-            bls_pk.0.serialize_compressed(&mut bls_bytes).unwrap();
+            bls_pk.serialize_compressed(&mut bls_bytes).unwrap();
             ValidatorPeerInfo {
                 ed25519_public_key: hex::encode(ed25519_pk.as_ref()),
                 bls_peer_id: identity.peer_id(),
@@ -1046,7 +1046,7 @@ fn test_multiple_rpc_nodes() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -1056,7 +1056,7 @@ fn test_multiple_rpc_nodes() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -1119,7 +1119,7 @@ fn test_multiple_rpc_nodes() {
             let ed25519_pk = identity.ed25519_public_key();
             let bls_pk = identity.bls_public_key();
             let mut bls_bytes = Vec::new();
-            bls_pk.0.serialize_compressed(&mut bls_bytes).unwrap();
+            bls_pk.serialize_compressed(&mut bls_bytes).unwrap();
             ValidatorPeerInfo {
                 ed25519_public_key: hex::encode(ed25519_pk.as_ref()),
                 bls_peer_id: identity.peer_id(),
@@ -1371,7 +1371,7 @@ fn test_rpc_node_l_notarization_queries() {
     for _i in 0..N {
         let bls_sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let identity = ValidatorIdentity::from_bls_key(bls_sk);
-        public_keys.push(identity.bls_public_key().clone());
+        public_keys.push(*identity.bls_public_key());
         identities.push(identity);
     }
 
@@ -1381,7 +1381,7 @@ fn test_rpc_node_l_notarization_queries() {
     for peer_id in &peer_set.sorted_peer_ids {
         let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
         let mut buf = Vec::new();
-        pk.0.serialize_compressed(&mut buf).unwrap();
+        pk.serialize_compressed(&mut buf).unwrap();
         peer_strs.push(hex::encode(buf));
     }
 
@@ -1444,7 +1444,7 @@ fn test_rpc_node_l_notarization_queries() {
             let ed25519_pk = identity.ed25519_public_key();
             let bls_pk = identity.bls_public_key();
             let mut bls_bytes = Vec::new();
-            bls_pk.0.serialize_compressed(&mut bls_bytes).unwrap();
+            bls_pk.serialize_compressed(&mut bls_bytes).unwrap();
             ValidatorPeerInfo {
                 ed25519_public_key: hex::encode(ed25519_pk.as_ref()),
                 bls_peer_id: identity.peer_id(),
@@ -1572,8 +1572,8 @@ fn test_rpc_node_l_notarization_queries() {
             assert!(!l_notarization_response.block_hash.is_empty());
             assert!(!l_notarization_response.aggregated_signature.is_empty());
             assert!(
-                !l_notarization_response.peer_ids.is_empty(),
-                "L-notarization should have signer peer IDs"
+                l_notarization_response.peer_ids.is_empty(),
+                "Compact L-notarization should not expose signer peer IDs"
             );
 
             slog::info!(

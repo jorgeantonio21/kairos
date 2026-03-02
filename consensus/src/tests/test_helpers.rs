@@ -9,7 +9,7 @@ use crate::{
         leader_manager::LeaderSelectionStrategy,
     },
     crypto::{
-        aggregated::{BlsPublicKey, BlsSecretKey, PeerId},
+        consensus_bls::{BlsPublicKey, BlsSecretKey, PeerId, ThresholdSignerContext},
         transaction_crypto::{TxPublicKey, TxSecretKey},
     },
     mempool::{FinalizedNotification, MempoolService, ProposalRequest, ProposalResponse},
@@ -18,10 +18,19 @@ use crate::{
     validation::PendingStateWriter,
 };
 
-use std::sync::{Arc, atomic::AtomicBool};
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::AtomicBool},
+};
 use tokio::sync::Notify;
 
-use ark_serialize::CanonicalSerialize;
+use anyhow::{Context, Result, anyhow};
+use crypto::bls::ops::public_key_from_scalar;
+use crypto::dkg::run_in_memory_dual_dkg;
+use crypto::threshold_setup::{
+    ThresholdDomains, ThresholdKeyset, ThresholdKeysets, ThresholdSetupArtifact,
+    ValidatorParticipant,
+};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -37,6 +46,10 @@ pub const DEFAULT_VIEW_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default tick interval for consensus engines
 pub const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(10);
+pub const TEST_VALIDATOR_SET_ID: &str = "consensus-e2e-threshold-tests";
+pub const DOMAIN_M_NOT: &str = "consensus/m-not/v1";
+pub const DOMAIN_NULLIFY: &str = "consensus/nullify/v1";
+pub const DOMAIN_L_NOT: &str = "consensus/l-not/v1";
 
 /// Keypair for a replica
 #[derive(Clone)]
@@ -200,6 +213,8 @@ pub struct TestFixture {
 
     /// The peer set containing all replica peer IDs
     pub peer_set: PeerSet,
+    /// Per-peer threshold signer contexts used for consensus hot-path signatures.
+    pub threshold_signer_by_peer_id: HashMap<PeerId, ThresholdSignerContext>,
 
     /// Base consensus configuration
     pub config: ConsensusConfig,
@@ -217,24 +232,23 @@ impl TestFixture {
     /// A complete test fixture ready for use
     pub fn new(n: usize, f: usize, view_timeout: Duration) -> Self {
         let mut keypairs = Vec::new();
-        let mut public_keys = Vec::new();
 
         // Generate keypairs for all replicas
         for _ in 0..n {
             let keypair = KeyPair::generate();
-            public_keys.push(keypair.public_key.clone());
             keypairs.push(keypair);
         }
 
-        // Create peer set (automatically sorts peer IDs)
-        let peer_set = PeerSet::new(public_keys);
+        let (peer_set, threshold_signer_by_peer_id) =
+            build_threshold_material_from_keypairs(&keypairs, n, f, TEST_VALIDATOR_SET_ID)
+                .expect("threshold test material generation must succeed");
 
         // Create config strings (hex-encoded public keys)
         let mut peer_strs = Vec::with_capacity(peer_set.sorted_peer_ids.len());
         for peer_id in &peer_set.sorted_peer_ids {
             let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             peer_strs.push(hex::encode(buf));
         }
 
@@ -251,6 +265,7 @@ impl TestFixture {
         Self {
             keypairs,
             peer_set,
+            threshold_signer_by_peer_id,
             config,
         }
     }
@@ -266,6 +281,131 @@ impl TestFixture {
     pub fn default() -> Self {
         Self::new(N, F, DEFAULT_VIEW_TIMEOUT)
     }
+}
+
+fn build_threshold_material_from_keypairs(
+    keypairs: &[KeyPair],
+    n: usize,
+    f: usize,
+    validator_set_id: &str,
+) -> Result<(PeerSet, HashMap<PeerId, ThresholdSignerContext>)> {
+    if keypairs.len() != n {
+        return Err(anyhow!(
+            "keypair length {} does not match n {}",
+            keypairs.len(),
+            n
+        ));
+    }
+    if validator_set_id.trim().is_empty() {
+        return Err(anyhow!("validator_set_id must be non-empty"));
+    }
+
+    let mut entries = keypairs
+        .iter()
+        .map(|keypair| (keypair.public_key.to_peer_id(), keypair.public_key))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(peer_id, _)| *peer_id);
+
+    let mut rng = rand::thread_rng();
+    let dual_dkg = run_in_memory_dual_dkg(n, f, &mut rng).context("run in-memory dual DKG")?;
+
+    let m_secret_by_index = dual_dkg
+        .m_nullify
+        .participant_shares
+        .iter()
+        .map(|share| (share.participant_index, share.secret_share.clone()))
+        .collect::<HashMap<_, _>>();
+    let l_secret_by_index = dual_dkg
+        .l_notarization
+        .participant_shares
+        .iter()
+        .map(|share| (share.participant_index, share.secret_share.clone()))
+        .collect::<HashMap<_, _>>();
+
+    let mut validators = Vec::with_capacity(n);
+    let mut peers = Vec::with_capacity(n);
+    let mut indices = Vec::with_capacity(n);
+    let mut id_to_m_share_public_key = HashMap::with_capacity(n);
+    let mut id_to_l_share_public_key = HashMap::with_capacity(n);
+
+    for (position, (peer_id, public_key)) in entries.iter().enumerate() {
+        let participant_index = (position + 1) as u64;
+        let m_secret = m_secret_by_index
+            .get(&participant_index)
+            .ok_or_else(|| anyhow!("missing M secret share for index {}", participant_index))?;
+        let l_secret = l_secret_by_index
+            .get(&participant_index)
+            .ok_or_else(|| anyhow!("missing L secret share for index {}", participant_index))?;
+
+        let m_share_public_key = BlsPublicKey(public_key_from_scalar(m_secret)?);
+        let l_share_public_key = BlsPublicKey(public_key_from_scalar(l_secret)?);
+        validators.push(ValidatorParticipant {
+            peer_id: *peer_id,
+            participant_index,
+            m_share_public_key: hex::encode(m_share_public_key.0),
+            l_share_public_key: hex::encode(l_share_public_key.0),
+        });
+        peers.push(*public_key);
+        indices.push(participant_index);
+        id_to_m_share_public_key.insert(*peer_id, m_share_public_key);
+        id_to_l_share_public_key.insert(*peer_id, l_share_public_key);
+    }
+
+    let mut peer_set = PeerSet::with_threshold_material(
+        peers,
+        indices,
+        id_to_m_share_public_key,
+        id_to_l_share_public_key,
+        DOMAIN_M_NOT.as_bytes().to_vec(),
+        DOMAIN_NULLIFY.as_bytes().to_vec(),
+        DOMAIN_L_NOT.as_bytes().to_vec(),
+    )?;
+    peer_set.m_group_public_key = Some(dual_dkg.m_nullify.group_public_key);
+    peer_set.l_group_public_key = Some(dual_dkg.l_notarization.group_public_key);
+
+    let mut signer_by_peer_id = HashMap::with_capacity(n);
+    for (position, (peer_id, _)) in entries.iter().enumerate() {
+        let participant_index = (position + 1) as u64;
+        let m_secret = m_secret_by_index
+            .get(&participant_index)
+            .ok_or_else(|| anyhow!("missing M secret share for index {}", participant_index))?;
+        let l_secret = l_secret_by_index
+            .get(&participant_index)
+            .ok_or_else(|| anyhow!("missing L secret share for index {}", participant_index))?;
+
+        let artifact = ThresholdSetupArtifact {
+            validator_set_id: validator_set_id.to_string(),
+            peer_id: *peer_id,
+            participant_index,
+            n,
+            f,
+            validators: validators.clone(),
+            domains: ThresholdDomains {
+                m_not: DOMAIN_M_NOT.to_string(),
+                nullify: DOMAIN_NULLIFY.to_string(),
+                l_not: DOMAIN_L_NOT.to_string(),
+            },
+            keysets: ThresholdKeysets {
+                m_nullify: ThresholdKeyset {
+                    threshold: 2 * f + 1,
+                    group_public_key: hex::encode(dual_dkg.m_nullify.group_public_key.0),
+                    secret_share: hex::encode(m_secret.to_bytes_le()),
+                },
+                l_notarization: ThresholdKeyset {
+                    threshold: n - f,
+                    group_public_key: hex::encode(dual_dkg.l_notarization.group_public_key.0),
+                    secret_share: hex::encode(l_secret.to_bytes_le()),
+                },
+            },
+        };
+        artifact
+            .validate_for_node(*peer_id, n, f, Some(validator_set_id))
+            .context("threshold setup artifact validation for test node")?;
+        let signer = ThresholdSignerContext::from_decoded_setup(artifact.decode()?)?;
+        signer_by_peer_id.insert(*peer_id, signer);
+    }
+
+    Ok((peer_set, signer_by_peer_id))
 }
 
 /// Creates a test transaction with the given parameters and proper signature
@@ -312,4 +452,38 @@ pub fn create_funded_test_transactions(count: usize) -> (Vec<Transaction>, Vec<G
     }
 
     (transactions, genesis_accounts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::consensus_bls::{ThresholdDomain, ThresholdProof};
+
+    #[test]
+    fn threshold_fixture_material_sanity_combines_and_verifies() {
+        let fixture = TestFixture::default();
+        let payload = [7u8; blake3::OUT_LEN];
+
+        let mut partials = Vec::new();
+        for peer_id in fixture.peer_set.sorted_peer_ids.iter().take(2 * F + 1) {
+            let signer = fixture
+                .threshold_signer_by_peer_id
+                .get(peer_id)
+                .expect("missing signer");
+            let partial = signer
+                .partial_sign(ThresholdDomain::MNotarization, &payload)
+                .expect("sign");
+            let index = fixture.peer_set.get_index(peer_id).expect("index");
+            partials.push((index, partial));
+        }
+
+        let proof = ThresholdProof::combine_partials(&partials).expect("combine");
+        let mut message = DOMAIN_M_NOT.as_bytes().to_vec();
+        message.extend_from_slice(&payload);
+        let group_key = fixture
+            .peer_set
+            .m_group_public_key
+            .expect("missing m group key");
+        assert!(group_key.verify(&message, &proof.0));
+    }
 }

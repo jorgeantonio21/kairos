@@ -1,4 +1,4 @@
-use crate::{crypto::aggregated::PeerId, state::leader::Leader};
+use crate::{crypto::consensus_bls::PeerId, state::leader::Leader};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -17,14 +17,20 @@ pub trait LeaderManager: Send {
 
 /// [`RoundRobinLeaderManager`] implements the round-robin leader selection strategy.
 ///
-/// This strategy selects the leader for a given view by using a round-robin approach.
-/// The leader is selected by the index of the replica in the list of replicas.
+/// This strategy selects the leader for a given view by using a round-robin approach
+/// based on DKG indices. Using indices instead of hash-derived PeerIds prevents
+/// vanity/selection bias attacks where a node could mine for favorable positions.
+///
+/// The leader is selected by: `view % n` to get an index, then mapping that to a PeerId.
 pub(crate) struct RoundRobinLeaderManager {
     /// The number of replicas in the consensus protocol.
     n: usize,
 
-    /// The vector of all available replicas in the consensus protocol.
+    /// PeerIds for P2P communication (sorted).
     pub replicas: Vec<PeerId>,
+
+    /// DKG participant indices aligned with `replicas`.
+    indices: Vec<u64>,
 }
 
 impl RoundRobinLeaderManager {
@@ -32,20 +38,22 @@ impl RoundRobinLeaderManager {
     ///
     /// # Arguments
     /// * `n` - The total number of replicas in the consensus protocol
-    /// * `replicas` - A **sorted** vector of replica peer IDs
+    /// * `replicas` - A **sorted** vector of replica peer IDs (for P2P)
     ///
     /// # Panics
     ///
     /// Panics if:
     /// - The `replicas` vector is not sorted in ascending order
     /// - The length of `replicas` does not match `n`
-    ///
-    /// # Safety Note
-    ///
-    /// The caller MUST ensure that all replicas in the network use the exact same
-    /// sorted ordering. Using `PeerSet::sorted_peer_ids` is the recommended way
-    /// to guarantee this invariant.
+    #[cfg(test)]
     pub fn new(n: usize, replicas: Vec<PeerId>) -> Self {
+        let indices = (1u64..=n as u64).collect::<Vec<_>>();
+        Self::new_with_indices(n, replicas, indices)
+    }
+
+    /// Creates a round-robin leader manager using explicit participant indices aligned with
+    /// `replicas`.
+    pub fn new_with_indices(n: usize, replicas: Vec<PeerId>, indices: Vec<u64>) -> Self {
         assert_eq!(
             replicas.len(),
             n,
@@ -53,8 +61,15 @@ impl RoundRobinLeaderManager {
             n,
             replicas.len()
         );
+        assert_eq!(
+            indices.len(),
+            n,
+            "Indices count mismatch: expected {}, got {}",
+            n,
+            indices.len()
+        );
 
-        // Verify that the replicas are sorted (for deterministic round-robin leader selection)
+        // Verify that the replicas are sorted (for deterministic P2P)
         for i in 1..replicas.len() {
             assert!(
                 replicas[i - 1] < replicas[i],
@@ -68,15 +83,21 @@ impl RoundRobinLeaderManager {
             );
         }
 
-        Self { n, replicas }
+        Self {
+            n,
+            replicas,
+            indices,
+        }
     }
 }
 
 impl LeaderManager for RoundRobinLeaderManager {
     fn leader_for_view(&self, view: u64) -> Result<Leader> {
-        let leader_index = view as usize % self.n;
+        // Use DKG index for selection - deterministic, cannot be biased
+        let leader_index = (view as usize) % self.n;
+        let leader_idx = self.indices[leader_index];
         let leader_peer_id = self.replicas[leader_index];
-        Ok(Leader::new(leader_peer_id, view))
+        Ok(Leader::new(leader_peer_id, leader_idx, view))
     }
 }
 

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use consensus::crypto::aggregated::BlsSecretKey;
+use consensus::crypto::consensus_bls::BlsSecretKey;
 use consensus::crypto::transaction_crypto::TxSecretKey;
 use consensus::state::address::Address;
 use consensus::state::block::Block;

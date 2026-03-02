@@ -1,4 +1,4 @@
-use crate::{consensus::ConsensusMessage, crypto::aggregated::PeerId};
+use crate::{consensus::ConsensusMessage, crypto::consensus_bls::PeerId};
 
 /// Events emitted by the view progress manager to drive the consensus protocol forward.
 ///

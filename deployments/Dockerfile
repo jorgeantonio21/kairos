@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /src
 COPY . .
-RUN cargo build --release --package node
+RUN cargo build --release --package node --package bootstrap-rpc
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
@@ -17,4 +17,5 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /src/target/release/node /usr/local/bin/kairos-node
+COPY --from=builder /src/target/release/bootstrap-rpc /usr/local/bin/bootstrap-rpc
 ENTRYPOINT ["kairos-node"]

@@ -1,6 +1,5 @@
 //! Consensus service implementation for L-notarization queries.
 
-use ark_serialize::CanonicalSerialize;
 use tonic::{Request, Response, Status};
 
 use crate::proto::consensus_service_server::ConsensusService;
@@ -62,7 +61,8 @@ impl ConsensusService for ConsensusServiceImpl {
                     block_hash: hex::encode(l.block_hash),
                     height: l.height,
                     aggregated_signature: hex::encode(sig_bytes),
-                    peer_ids: l.peer_ids.to_vec(),
+                    // Compact L-notarizations do not carry signer lists.
+                    peer_ids: vec![],
                     error: ErrorCode::Unspecified as i32,
                 }))
             }
@@ -105,7 +105,8 @@ impl ConsensusService for ConsensusServiceImpl {
                     block_hash: hex::encode(l.block_hash),
                     height: l.height,
                     aggregated_signature: hex::encode(sig_bytes),
-                    peer_ids: l.peer_ids.to_vec(),
+                    // Compact L-notarizations do not carry signer lists.
+                    peer_ids: vec![],
                     error: ErrorCode::Unspecified as i32,
                 }))
             }

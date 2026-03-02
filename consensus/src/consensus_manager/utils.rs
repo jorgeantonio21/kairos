@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use crate::{
-    crypto::aggregated::{BlsSignature, PeerId},
-    state::{notarizations::Vote, nullify::Nullify},
+    crypto::consensus_bls::{ThresholdPartialSignature, ThresholdProof},
+    state::{notarizations::Vote, nullify::Nullify, peer::PeerSet},
 };
 
 /// Data structure containing the aggregated signature and peer IDs for a notarization.
@@ -12,23 +12,20 @@ use crate::{
 /// This struct is used to bundle the results of signature aggregation and peer ID
 /// collection for both M-notarizations and L-notarizations.
 pub(crate) struct NotarizationData<const N: usize> {
-    /// Array of peer IDs participating in the notarization.
-    /// Note: This may contain duplicate or zero values if there aren't enough distinct peers.
-    pub(crate) peer_ids: [PeerId; N],
     /// The aggregated BLS signature from the participating peers.
-    pub(crate) aggregated_signature: BlsSignature,
+    pub(crate) aggregated_signature: ThresholdProof,
 }
 
-/// Creates notarization data by aggregating signatures and collecting peer IDs from votes.
+/// Creates notarization data by combining threshold partial signatures and collecting signer IDs.
 ///
 /// This function takes the first N votes from the provided HashSet and:
-/// 1. Aggregates their BLS signatures using `BlsSignature::aggregate`
+/// 1. Sorts votes by `peer_id` to ensure deterministic signer ordering
+/// 2. Combines their partial signatures using `BlsSignature::combine_partials`
 /// 2. Collects their peer IDs into a fixed-size array
 ///
 /// # Important Notes
 ///
-/// - If the same peer has multiple votes, their peer ID may appear multiple times in the array or
-///   overwrite previous entries.
+/// - Deterministic ordering is kept intentionally for reproducible proof bytes across nodes.
 ///
 /// # Parameters
 ///
@@ -46,10 +43,11 @@ pub(crate) struct NotarizationData<const N: usize> {
 ///
 /// ```ignore
 /// let votes = HashSet::from([vote1, vote2, vote3]);
-/// let data: NotarizationData<3> = create_notarization_data(&votes)?;
+/// let data: NotarizationData<3> = create_notarization_data(&votes, &peer_set)?;
 /// ```
 pub(crate) fn create_notarization_data<const N: usize>(
     votes: &HashSet<Vote>,
+    peer_set: &PeerSet,
 ) -> Result<NotarizationData<N>> {
     if votes.len() < N {
         return Err(anyhow::anyhow!(
@@ -59,18 +57,20 @@ pub(crate) fn create_notarization_data<const N: usize>(
         ));
     }
 
-    let mut peer_ids: [PeerId; N] = [0; N];
-    let signatures_iter = votes
+    let mut selected_votes: Vec<&Vote> = votes.iter().collect();
+    // Deterministic ordering across replicas before selecting N participants.
+    selected_votes.sort_by_key(|vote| vote.peer_id);
+    let selected_votes = &selected_votes[..N];
+
+    let partials: Vec<(u64, ThresholdPartialSignature)> = selected_votes
         .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            peer_ids[i] = v.peer_id;
-            &v.signature
+        .map(|vote| -> Result<(u64, ThresholdPartialSignature)> {
+            let participant_index = peer_set.get_index(&vote.peer_id)?;
+            Ok((participant_index, vote.signature))
         })
-        .take(N);
-    let aggregated_signature = BlsSignature::aggregate(signatures_iter);
+        .collect::<Result<Vec<_>>>()?;
+    let aggregated_signature = ThresholdProof::combine_partials(&partials)?;
     Ok(NotarizationData {
-        peer_ids,
         aggregated_signature,
     })
 }
@@ -80,23 +80,21 @@ pub(crate) fn create_notarization_data<const N: usize>(
 /// This struct is used to bundle the results of signature aggregation and peer ID
 /// collection for nullifications.
 pub(crate) struct NullificationData<const N: usize> {
-    /// The peer IDs of the replicas that have nullified the view
-    pub(crate) peer_ids: [PeerId; N],
     /// The aggregated BLS signature from the participating peers.
-    pub(crate) aggregated_signature: BlsSignature,
+    pub(crate) aggregated_signature: ThresholdProof,
 }
 
-/// Creates nullification data by aggregating signatures and collecting peer IDs from
-/// nullifications.
+/// Creates nullification data by combining threshold partial signatures and collecting signer IDs.
 ///
 /// This function selects N nullifications from the provided HashSet and:
-/// 1. Aggregates their BLS signatures using `BlsSignature::aggregate`
+/// 1. Sorts nullifications by `peer_id` to ensure deterministic signer ordering
+/// 2. Combines partial signatures using `BlsSignature::combine_partials`
 /// 2. Collects their peer IDs into a fixed-size array
 ///
 /// # Important Notes
 ///
 /// - The HashSet ensures uniqueness based on (view, peer_id), so peer IDs are guaranteed distinct
-/// - HashSet iteration order is not guaranteed, so results may vary between runs
+/// - Sorting removes HashSet iteration nondeterminism for reproducible proof construction
 /// - All nullifications should be for the same view (enforced by the HashSet's equality)
 ///
 /// # Parameters
@@ -115,10 +113,11 @@ pub(crate) struct NullificationData<const N: usize> {
 ///
 /// ```ignore
 /// let nullifications = HashSet::from([nullify1, nullify2, nullify3]);
-/// let data: NullificationData<3> = create_nullification_data(&nullifications)?;
+/// let data: NullificationData<3> = create_nullification_data(&nullifications, &peer_set)?;
 /// ```
 pub(crate) fn create_nullification_data<const N: usize>(
     nullifications: &HashSet<Nullify>,
+    peer_set: &PeerSet,
 ) -> Result<NullificationData<N>> {
     if nullifications.len() < N {
         return Err(anyhow::anyhow!(
@@ -128,18 +127,20 @@ pub(crate) fn create_nullification_data<const N: usize>(
         ));
     }
 
-    let mut peer_ids: [PeerId; N] = [0; N];
-    let signatures_iter = nullifications
+    let mut selected_nullifications: Vec<&Nullify> = nullifications.iter().collect();
+    // Deterministic ordering across replicas before selecting N participants.
+    selected_nullifications.sort_by_key(|nullify| nullify.peer_id);
+    let selected_nullifications = &selected_nullifications[..N];
+
+    let partials: Vec<(u64, ThresholdPartialSignature)> = selected_nullifications
         .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            peer_ids[i] = n.peer_id;
-            &n.signature
+        .map(|nullify| -> Result<(u64, ThresholdPartialSignature)> {
+            let participant_index = peer_set.get_index(&nullify.peer_id)?;
+            Ok((participant_index, nullify.signature))
         })
-        .take(N);
-    let aggregated_signature = BlsSignature::aggregate(signatures_iter);
+        .collect::<Result<Vec<_>>>()?;
+    let aggregated_signature = ThresholdProof::combine_partials(&partials)?;
     Ok(NullificationData {
-        peer_ids,
         aggregated_signature,
     })
 }

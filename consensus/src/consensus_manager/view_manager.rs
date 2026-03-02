@@ -371,7 +371,7 @@ use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
 use anyhow::Result;
 
 use crate::{
-    consensus::ConsensusMessage,
+    consensus::{BlockProposal, ConsensusMessage},
     consensus_manager::{
         config::ConsensusConfig,
         events::ViewProgressEvent,
@@ -382,7 +382,7 @@ use crate::{
             ShouldMNotarize, ViewContext,
         },
     },
-    crypto::aggregated::{BlsPublicKey, BlsSignature, PeerId},
+    crypto::consensus_bls::{BlsPublicKey, BlsSignature, PeerId, ThresholdPartialSignature},
     state::{
         block::Block,
         notarizations::{MNotarization, Vote},
@@ -445,6 +445,18 @@ pub struct ViewProgressManager<const N: usize, const F: usize, const M_SIZE: usi
 }
 
 impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N, F, M_SIZE> {
+    pub(crate) fn parse_config_peers(peer_keys: &[String]) -> Result<PeerSet> {
+        let parsed_peers = peer_keys
+            .iter()
+            .map(|peer| {
+                BlsPublicKey::from_str(peer).map_err(|error| {
+                    anyhow::anyhow!("failed to parse BLS public key '{peer}': {error}")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(PeerSet::new(parsed_peers))
+    }
+
     pub fn new(
         config: ConsensusConfig,
         replica_id: PeerId,
@@ -452,21 +464,34 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         persistence_writer: PendingStateWriter,
         logger: slog::Logger,
     ) -> Result<Self> {
-        let peers = PeerSet::new(
-            config
-                .peers
-                .iter()
-                .map(|p| BlsPublicKey::from_str(p).expect("Failed to parse BlsPublicKey"))
-                .collect(),
-        );
+        Self::new_with_peers(
+            config,
+            replica_id,
+            leader_manager,
+            None,
+            persistence_writer,
+            logger,
+        )
+    }
+
+    pub fn new_with_peers(
+        config: ConsensusConfig,
+        replica_id: PeerId,
+        leader_manager: Box<dyn LeaderManager>,
+        peers_override: Option<PeerSet>,
+        persistence_writer: PendingStateWriter,
+        logger: slog::Logger,
+    ) -> Result<Self> {
+        let peers = if let Some(peers) = peers_override {
+            peers
+        } else {
+            Self::parse_config_peers(&config.peers)?
+        };
 
         // Create and persist genesis block
         let genesis_leader = leader_manager.leader_for_view(0)?.peer_id();
         let genesis_block_hash = Block::genesis_hash();
-        let genesis_block = Block::genesis(
-            genesis_leader,
-            BlsSignature(ark_bls12_381::G1Affine::default()),
-        );
+        let genesis_block = Block::genesis(genesis_leader, BlsSignature::default());
         debug_assert_eq!(genesis_block.get_hash(), genesis_block_hash);
 
         persistence_writer.put_finalized_block(&genesis_block)?;
@@ -519,32 +544,43 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         persistence_writer: PendingStateWriter,
         logger: slog::Logger,
     ) -> Result<Self> {
-        let peers = PeerSet::new(
-            config
-                .peers
-                .iter()
-                .map(|p| BlsPublicKey::from_str(p).expect("Failed to parse BlsPublicKey"))
-                .collect(),
-        );
+        Self::from_genesis_with_peers(
+            config,
+            replica_id,
+            block_validator,
+            None,
+            persistence_writer,
+            logger,
+        )
+    }
+
+    pub fn from_genesis_with_peers(
+        config: ConsensusConfig,
+        replica_id: PeerId,
+        block_validator: BlockValidator,
+        peers_override: Option<PeerSet>,
+        persistence_writer: PendingStateWriter,
+        logger: slog::Logger,
+    ) -> Result<Self> {
+        let peers = if let Some(peers) = peers_override {
+            peers
+        } else {
+            Self::parse_config_peers(&config.peers)?
+        };
 
         let leader_manager = match config.leader_manager {
-            LeaderSelectionStrategy::RoundRobin => Box::new(RoundRobinLeaderManager::new(
-                config.n,
-                peers.sorted_peer_ids,
-            )),
+            LeaderSelectionStrategy::RoundRobin => {
+                Box::new(RoundRobinLeaderManager::new_with_indices(
+                    config.n,
+                    peers.sorted_peer_ids.clone(),
+                    peers.indices.clone(),
+                ))
+            }
             #[allow(unreachable_code)]
             LeaderSelectionStrategy::Random => Box::new(todo!()),
             #[allow(unreachable_code)]
             LeaderSelectionStrategy::ProofOfStake => Box::new(todo!()),
         };
-
-        let peers = PeerSet::new(
-            config
-                .peers
-                .iter()
-                .map(|p| BlsPublicKey::from_str(p).expect("Failed to parse BlsPublicKey"))
-                .collect(),
-        );
 
         let leader_id = leader_manager.leader_for_view(1)?.peer_id();
         let view_context = ViewContext::new(1, leader_id, replica_id, Block::genesis_hash());
@@ -610,7 +646,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         consensus_message: ConsensusMessage<N, F, M_SIZE>,
     ) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
         match consensus_message {
-            ConsensusMessage::BlockProposal(block) => self.handle_block_proposal(block),
+            ConsensusMessage::BlockProposal(proposal) => {
+                self.handle_block_proposal_message(proposal)
+            }
             ConsensusMessage::Vote(vote) => self.handle_vote(vote),
             ConsensusMessage::Nullify(nullify) => self.handle_nullify(nullify),
             ConsensusMessage::MNotarization(m_notarization) => {
@@ -1060,14 +1098,28 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         &mut self,
         view: u64,
         block_hash: [u8; blake3::OUT_LEN],
-        signature: BlsSignature,
+        signature: impl Into<ThresholdPartialSignature>,
     ) -> Result<()> {
+        let signature = signature.into();
+        self.add_own_vote_with_l_signature(view, block_hash, signature, signature)
+    }
+
+    /// Adds the current replica's vote for a block in a view with explicit M/L signatures.
+    pub fn add_own_vote_with_l_signature(
+        &mut self,
+        view: u64,
+        block_hash: [u8; blake3::OUT_LEN],
+        m_signature: impl Into<ThresholdPartialSignature>,
+        l_signature: impl Into<ThresholdPartialSignature>,
+    ) -> Result<()> {
+        let m_signature = m_signature.into();
+        let l_signature = l_signature.into();
         let view_ctx = self
             .view_chain
             .find_view_context_mut(view)
             .ok_or_else(|| anyhow::anyhow!("View {} not found", view))?;
 
-        view_ctx.add_own_vote(block_hash, signature)?;
+        view_ctx.add_own_vote_with_l_signature(block_hash, m_signature, l_signature)?;
         Ok(())
     }
 
@@ -1077,8 +1129,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         &mut self,
         view: u64,
         block: Block,
-        signature: BlsSignature,
+        signature: impl Into<ThresholdPartialSignature>,
     ) -> Result<()> {
+        let signature = signature.into();
         let view_ctx = self
             .view_chain
             .find_view_context_mut(view)
@@ -1097,7 +1150,27 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
     ///
     /// Routes to view chain; only checks if we need to update to a future view.
     /// All other validation is delegated to [`ViewChain`]/[`ViewContext`].
+    fn handle_block_proposal_message(
+        &mut self,
+        proposal: BlockProposal,
+    ) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
+        let block = proposal.block;
+        let leader_m_signature = proposal.leader_m_signature;
+        let leader_l_signature = proposal.leader_l_signature;
+        self.handle_block_proposal_with_leader_vote(block, leader_m_signature, leader_l_signature)
+    }
+
     fn handle_block_proposal(&mut self, block: Block) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
+        let leader_partial = ThresholdPartialSignature(block.leader_signature);
+        self.handle_block_proposal_with_leader_vote(block, leader_partial, leader_partial)
+    }
+
+    fn handle_block_proposal_with_leader_vote(
+        &mut self,
+        block: Block,
+        leader_m_signature: ThresholdPartialSignature,
+        leader_l_signature: ThresholdPartialSignature,
+    ) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
         let current_view_number = self.view_chain.current_view_number();
         let block_view_number = block.header.view;
 
@@ -1147,9 +1220,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
             should_await,
             should_vote,
             should_nullify,
-        } = self.view_chain.add_block_proposal(
+        } = self.view_chain.add_block_proposal_with_leader_vote(
             block_view_number,
             block,
+            leader_m_signature,
+            leader_l_signature,
             Arc::new(state_diff),
             &self.peers,
         )?;
@@ -1749,7 +1824,7 @@ mod tests {
             leader_manager::{LeaderSelectionStrategy, RoundRobinLeaderManager},
             utils::{create_notarization_data, create_nullification_data},
         },
-        crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+        crypto::transaction_crypto::TxSecretKey,
         state::{
             address::Address,
             block::Block,
@@ -1760,7 +1835,12 @@ mod tests {
         },
         storage::store::ConsensusStore,
     };
-    use ark_serialize::CanonicalSerialize;
+    use crypto::{
+        bls::ops::{public_key_from_scalar, sign_with_scalar},
+        consensus_bls::{BlsPublicKey, BlsSecretKey, BlsSignature, ThresholdPartialSignature},
+        dkg::run_in_memory_dual_dkg,
+        scalar::Scalar,
+    };
     use rand::thread_rng;
     use std::{
         collections::{HashMap, HashSet},
@@ -1772,13 +1852,15 @@ mod tests {
     struct TestSetup {
         peer_set: PeerSet,
         peer_id_to_secret_key: HashMap<PeerId, BlsSecretKey>,
+        peer_id_to_m_secret_share: HashMap<PeerId, Scalar>,
+        peer_id_to_l_secret_share: HashMap<PeerId, Scalar>,
     }
 
     /// Creates a test peer set with secret keys
     fn create_test_peer_setup(size: usize) -> TestSetup {
         let mut rng = thread_rng();
-        let mut public_keys = vec![];
-        let mut peer_id_to_secret_key = HashMap::new();
+        let mut public_keys = Vec::with_capacity(size);
+        let mut peer_id_to_secret_key = HashMap::with_capacity(size);
 
         for _ in 0..size {
             let sk = BlsSecretKey::generate(&mut rng);
@@ -1788,9 +1870,60 @@ mod tests {
             public_keys.push(pk);
         }
 
+        let mut sorted_peer_ids = peer_id_to_secret_key.keys().copied().collect::<Vec<_>>();
+        sorted_peer_ids.sort_unstable();
+        public_keys = sorted_peer_ids
+            .iter()
+            .map(|peer_id| {
+                peer_id_to_secret_key
+                    .get(peer_id)
+                    .expect("peer must exist")
+                    .public_key()
+            })
+            .collect();
+        let f = std::cmp::max(1, (size - 1) / 5);
+        let dual_dkg = run_in_memory_dual_dkg(size, f, &mut rng).expect("in-memory dual DKG");
+        let mut id_to_m_share_public_key = HashMap::with_capacity(size);
+        let mut id_to_l_share_public_key = HashMap::with_capacity(size);
+        let mut peer_id_to_m_secret_share = HashMap::with_capacity(size);
+        let mut peer_id_to_l_secret_share = HashMap::with_capacity(size);
+
+        for (position, peer_id) in sorted_peer_ids.iter().copied().enumerate() {
+            let m_share = dual_dkg.m_nullify.participant_shares[position]
+                .secret_share
+                .clone();
+            let l_share = dual_dkg.l_notarization.participant_shares[position]
+                .secret_share
+                .clone();
+            let m_pk = BlsPublicKey(
+                public_key_from_scalar(&m_share)
+                    .expect("M-share public key derivation must succeed"),
+            );
+            let l_pk = BlsPublicKey(
+                public_key_from_scalar(&l_share)
+                    .expect("L-share public key derivation must succeed"),
+            );
+            id_to_m_share_public_key.insert(peer_id, m_pk);
+            id_to_l_share_public_key.insert(peer_id, l_pk);
+            peer_id_to_m_secret_share.insert(peer_id, m_share);
+            peer_id_to_l_secret_share.insert(peer_id, l_share);
+        }
+
+        let indices = (1..=size as u64).collect::<Vec<_>>();
         TestSetup {
-            peer_set: PeerSet::new(public_keys),
+            peer_set: PeerSet::with_threshold_material(
+                public_keys,
+                indices,
+                id_to_m_share_public_key,
+                id_to_l_share_public_key,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("peer set threshold material must be valid"),
             peer_id_to_secret_key,
+            peer_id_to_m_secret_share,
+            peer_id_to_l_secret_share,
         }
     }
 
@@ -1857,9 +1990,30 @@ mod tests {
         setup: &TestSetup,
     ) -> Vote {
         let peer_id = setup.peer_set.sorted_peer_ids[peer_index];
-        let secret_key = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-        let signature = secret_key.sign(&block_hash);
-        Vote::new(view, block_hash, signature, peer_id, leader_id)
+        let m_share = setup.peer_id_to_m_secret_share.get(&peer_id).unwrap();
+        let l_share = setup.peer_id_to_l_secret_share.get(&peer_id).unwrap();
+        let m_domain = setup.peer_set.m_not_domain.as_ref().expect("m_not domain");
+        let l_domain = setup.peer_set.l_not_domain.as_ref().expect("l_not domain");
+        let mut m_message = Vec::with_capacity(m_domain.len() + block_hash.len());
+        m_message.extend_from_slice(m_domain);
+        m_message.extend_from_slice(&block_hash);
+        let mut l_message = Vec::with_capacity(l_domain.len() + block_hash.len());
+        l_message.extend_from_slice(l_domain);
+        l_message.extend_from_slice(&block_hash);
+        let m_signature = ThresholdPartialSignature(BlsSignature(
+            sign_with_scalar(m_share, &m_message).expect("M partial signature must succeed"),
+        ));
+        let l_signature = ThresholdPartialSignature(BlsSignature(
+            sign_with_scalar(l_share, &l_message).expect("L partial signature must succeed"),
+        ));
+        Vote::new_with_threshold_signatures(
+            view,
+            block_hash,
+            m_signature,
+            l_signature,
+            peer_id,
+            leader_id,
+        )
     }
 
     /// Creates a signed nullify message from a peer
@@ -1870,9 +2024,19 @@ mod tests {
         setup: &TestSetup,
     ) -> Nullify {
         let peer_id = setup.peer_set.sorted_peer_ids[peer_index];
-        let secret_key = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-        let message = blake3::hash(&[view.to_le_bytes(), leader_id.to_le_bytes()].concat());
-        let signature = secret_key.sign(message.as_bytes());
+        let m_share = setup.peer_id_to_m_secret_share.get(&peer_id).unwrap();
+        let nullify_domain = setup
+            .peer_set
+            .nullify_domain
+            .as_ref()
+            .expect("nullify domain");
+        let message_hash = blake3::hash(&[view.to_le_bytes(), leader_id.to_le_bytes()].concat());
+        let mut message = Vec::with_capacity(nullify_domain.len() + message_hash.as_bytes().len());
+        message.extend_from_slice(nullify_domain);
+        message.extend_from_slice(message_hash.as_bytes());
+        let signature = ThresholdPartialSignature(BlsSignature(
+            sign_with_scalar(m_share, &message).expect("nullify partial signature must succeed"),
+        ));
         Nullify::new(view, leader_id, signature, peer_id)
     }
 
@@ -1882,15 +2046,10 @@ mod tests {
         view: u64,
         block_hash: [u8; blake3::OUT_LEN],
         leader_id: PeerId,
+        peer_set: &PeerSet,
     ) -> MNotarization<N, F, M_SIZE> {
-        let data = create_notarization_data::<M_SIZE>(votes).unwrap();
-        MNotarization::new(
-            view,
-            block_hash,
-            data.aggregated_signature,
-            data.peer_ids,
-            leader_id,
-        )
+        let data = create_notarization_data::<M_SIZE>(votes, peer_set).unwrap();
+        MNotarization::new(view, block_hash, data.aggregated_signature, leader_id)
     }
 
     /// Creates a test config with genesis accounts
@@ -1916,9 +2075,10 @@ mod tests {
         nullify_messages: &HashSet<Nullify>,
         view: u64,
         leader_id: PeerId,
+        peer_set: &PeerSet,
     ) -> Nullification<N, F, M_SIZE> {
-        let data = create_nullification_data::<M_SIZE>(nullify_messages).unwrap();
-        Nullification::new(view, leader_id, data.aggregated_signature, data.peer_ids)
+        let data = create_nullification_data::<M_SIZE>(nullify_messages, peer_set).unwrap();
+        Nullification::new(view, leader_id, data.aggregated_signature)
     }
 
     /// Creates a test consensus config
@@ -1990,7 +2150,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2007,17 +2167,16 @@ mod tests {
         let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
         let (persistence_writer, _persistence_reader) =
             PendingStateWriter::new(persistence_storage.clone(), 0);
-        (
-            ViewProgressManager::new(
-                config,
-                replica_id,
-                leader_manager,
-                persistence_writer,
-                logger,
-            )
-            .unwrap(),
-            path,
+        let mut manager = ViewProgressManager::new(
+            config,
+            replica_id,
+            leader_manager,
+            persistence_writer,
+            logger,
         )
+        .unwrap();
+        manager.peers = setup.peer_set.clone();
+        (manager, path)
     }
 
     #[test]
@@ -2042,7 +2201,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2203,7 +2362,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2237,6 +2396,7 @@ mod tests {
             logger,
         )
         .unwrap();
+        manager.peers = setup.peer_set.clone();
 
         // Verify initial state - should be waiting for block
         let initial_result = manager.tick();
@@ -2274,7 +2434,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2307,6 +2467,7 @@ mod tests {
             logger,
         )
         .unwrap();
+        manager.peers = setup.peer_set.clone();
 
         // Mark as already voted
         manager.mark_voted(1).unwrap();
@@ -2337,7 +2498,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2370,6 +2531,7 @@ mod tests {
             logger,
         )
         .unwrap();
+        manager.peers = setup.peer_set.clone();
 
         // Mark as already nullified
         manager.mark_nullified(1).unwrap();
@@ -2401,7 +2563,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2433,6 +2595,7 @@ mod tests {
             logger,
         )
         .unwrap();
+        manager.peers = setup.peer_set.clone();
 
         // Create and add M-notarization for view 0
         let leader_id_0 = setup.peer_set.sorted_peer_ids[1];
@@ -2446,8 +2609,13 @@ mod tests {
         for i in 1..=3 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id_0, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id_0);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id_0,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_notarization).unwrap();
 
         // Now manager is already in view 1 due to M-notarization handling
@@ -2489,8 +2657,13 @@ mod tests {
         for i in 2..=4 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 0, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            0,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         // Manually add M-notarization to view context WITHOUT calling handle_m_notarization
         // (which would trigger view progression)
@@ -2541,8 +2714,13 @@ mod tests {
         for i in 2..=4 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         assert!(result.is_ok());
@@ -2592,8 +2770,13 @@ mod tests {
         for i in 2..=4 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         assert!(result.is_ok());
@@ -2641,8 +2824,13 @@ mod tests {
         for i in 2..=4 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         assert!(result.is_ok());
@@ -2681,8 +2869,13 @@ mod tests {
         for i in 2..=4 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         // assert!(result.is_ok());
@@ -2724,10 +2917,7 @@ mod tests {
         // We need n-f = 5 total votes for finalization
         // Add 4 votes (leader + 3 others), bringing us to the threshold
         for i in 0..=3 {
-            let peer_id = setup.peer_set.sorted_peer_ids[i];
-            let sk = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-            let sig = sk.sign(&block_hash);
-            let vote = Vote::new(1, block_hash, sig, peer_id, leader_id);
+            let vote = create_test_vote(i, 1, block_hash, leader_id, &setup);
 
             // Add directly to view context to avoid triggering events
             let view_ctx = manager.view_chain.find_view_context_mut(1).unwrap();
@@ -2737,10 +2927,7 @@ mod tests {
 
         // Now we have 4 votes, need 1 more for n-f = 5
         // Add the 5th vote
-        let peer_id = setup.peer_set.sorted_peer_ids[4];
-        let sk = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-        let sig = sk.sign(&block_hash);
-        let vote = Vote::new(1, block_hash, sig, peer_id, leader_id);
+        let vote = create_test_vote(4, 1, block_hash, leader_id, &setup);
 
         let view_ctx = manager.view_chain.find_view_context_mut(1).unwrap();
         view_ctx.votes.insert(vote);
@@ -2785,10 +2972,7 @@ mod tests {
 
         for i in 0..5 {
             // n-f = 6-1 = 5 votes
-            let peer_id = setup.peer_set.sorted_peer_ids[i];
-            let sk = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-            let sig = sk.sign(&block_hash);
-            let vote = Vote::new(1, block_hash, sig, peer_id, leader_id);
+            let vote = create_test_vote(i, 1, block_hash, leader_id, &setup);
             view_ctx.votes.insert(vote);
         }
 
@@ -2833,10 +3017,7 @@ mod tests {
         // Add 2 votes for different hash + 1 nullify = 3 conflicting messages (≥ 2f+1)
         let conflicting_hash = [255u8; blake3::OUT_LEN];
         for i in 2..=3 {
-            let peer_id = setup.peer_set.sorted_peer_ids[i];
-            let sk = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-            let sig = sk.sign(&conflicting_hash);
-            let vote = Vote::new(1, conflicting_hash, sig, peer_id, leader_id);
+            let vote = create_test_vote(i, 1, conflicting_hash, leader_id, &setup);
             view_ctx.votes.insert(vote);
         }
 
@@ -2866,7 +3047,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -2899,22 +3080,22 @@ mod tests {
             logger,
         )
         .unwrap();
+        manager.peers = setup.peer_set.clone();
 
         // Step 1: Progress from View 1 to View 2 via Nullification
         {
             let view1_leader = setup.peer_set.sorted_peer_ids[1];
             let mut nullify_messages = HashSet::new();
             for i in 0..3 {
-                let peer_id = setup.peer_set.sorted_peer_ids[i];
-                let peer_sk = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-                let message =
-                    blake3::hash(&[1u64.to_le_bytes(), view1_leader.to_le_bytes()].concat());
-                let signature = peer_sk.sign(message.as_bytes());
-                let nullify = Nullify::new(1, view1_leader, signature, peer_id);
+                let nullify = create_test_nullify(i, 1, view1_leader, &setup);
                 nullify_messages.insert(nullify);
             }
-            let nullification =
-                create_test_nullification::<6, 1, 3>(&nullify_messages, 1, view1_leader);
+            let nullification = create_test_nullification::<6, 1, 3>(
+                &nullify_messages,
+                1,
+                view1_leader,
+                &setup.peer_set,
+            );
 
             // Route nullification for View 1 (Current View)
             manager
@@ -2936,16 +3117,15 @@ mod tests {
             let view2_leader = setup.peer_set.sorted_peer_ids[2];
             let mut nullify_messages = HashSet::new();
             for i in 0..3 {
-                let peer_id = setup.peer_set.sorted_peer_ids[i];
-                let peer_sk = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-                let message =
-                    blake3::hash(&[2u64.to_le_bytes(), view2_leader.to_le_bytes()].concat());
-                let signature = peer_sk.sign(message.as_bytes());
-                let nullify = Nullify::new(2, view2_leader, signature, peer_id);
+                let nullify = create_test_nullify(i, 2, view2_leader, &setup);
                 nullify_messages.insert(nullify);
             }
-            let nullification =
-                create_test_nullification::<6, 1, 3>(&nullify_messages, 2, view2_leader);
+            let nullification = create_test_nullification::<6, 1, 3>(
+                &nullify_messages,
+                2,
+                view2_leader,
+                &setup.peer_set,
+            );
 
             // Route nullification for View 2 (Now Current View)
             manager
@@ -2989,7 +3169,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -3022,6 +3202,7 @@ mod tests {
             logger,
         )
         .unwrap();
+        manager.peers = setup.peer_set.clone();
 
         let leader_id = setup.peer_set.sorted_peer_ids[1];
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
@@ -3069,10 +3250,7 @@ mod tests {
         view_ctx.block_hash = Some(block_hash);
 
         for i in 0..5 {
-            let peer_id = setup.peer_set.sorted_peer_ids[i];
-            let sk = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-            let sig = sk.sign(&block_hash);
-            let vote = Vote::new(0, block_hash, sig, peer_id, leader_id);
+            let vote = create_test_vote(i, 0, block_hash, leader_id, &setup);
             view_ctx.votes.insert(vote);
         }
 
@@ -3112,8 +3290,13 @@ mod tests {
         for i in 0..3 {
             m_votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&m_votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &m_votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_notarization).unwrap();
 
         // Now we're at view 2. Add more votes for view 1 to reach L-notarization threshold.
@@ -3479,8 +3662,13 @@ mod tests {
         for i in 1..=3 {
             m_votes_1.insert(create_test_vote(i, 1, block_hash_1, leader_id_1, &setup));
         }
-        let m_not_1 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_1, 1, block_hash_1, leader_id_1);
+        let m_not_1 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_1,
+            1,
+            block_hash_1,
+            leader_id_1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_not_1).unwrap();
 
         // Now at view 2
@@ -3719,8 +3907,13 @@ mod tests {
         for i in 1..=3 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         assert!(result.is_ok());
@@ -3771,8 +3964,13 @@ mod tests {
         for i in 1..=3 {
             m_votes_1.insert(create_test_vote(i, 1, block_hash_1, leader_id_1, &setup));
         }
-        let m_not_1 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_1, 1, block_hash_1, leader_id_1);
+        let m_not_1 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_1,
+            1,
+            block_hash_1,
+            leader_id_1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_not_1).unwrap();
 
         // Now at view 2, progress to view 2 and view 3
@@ -3806,6 +4004,7 @@ mod tests {
                 view_num as u64,
                 block_hash,
                 leader_id,
+                &setup.peer_set,
             );
             manager.handle_m_notarization(m_not).unwrap();
 
@@ -3820,8 +4019,13 @@ mod tests {
         for i in 1..=3 {
             votes.insert(create_test_vote(i, 1, block_hash_1, leader_id_1, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_1, leader_id_1);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash_1,
+            leader_id_1,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         result.unwrap(); // Should accept duplicate
@@ -3844,8 +4048,13 @@ mod tests {
         for i in 1..=3 {
             votes.insert(create_test_vote(i, 5, block_hash, wrong_leader, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 5, block_hash, wrong_leader);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            5,
+            block_hash,
+            wrong_leader,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         assert!(result.is_err());
@@ -3865,8 +4074,13 @@ mod tests {
         for i in 1..=3 {
             votes.insert(create_test_vote(i, 5, block_hash, leader_id_5, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 5, block_hash, leader_id_5);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            5,
+            block_hash,
+            leader_id_5,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         assert!(result.is_ok());
@@ -3895,7 +4109,8 @@ mod tests {
         for i in 1..=3 {
             nullify_messages.insert(create_test_nullify(i, 1, leader_id, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id, &setup.peer_set);
 
         let result = manager.handle_nullification(nullification);
         assert!(result.is_ok());
@@ -3931,7 +4146,12 @@ mod tests {
         for i in 0..=2 {
             nullify_messages.insert(create_test_nullify(i, 5, leader_id_5, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 5, leader_id_5);
+        let nullification = create_test_nullification::<6, 1, 3>(
+            &nullify_messages,
+            5,
+            leader_id_5,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_nullification(nullification);
         assert!(result.is_ok());
@@ -3958,8 +4178,12 @@ mod tests {
         for i in 1..=3 {
             nullify_messages.insert(create_test_nullify(i, 5, wrong_leader, &setup));
         }
-        let nullification =
-            create_test_nullification::<6, 1, 3>(&nullify_messages, 5, wrong_leader);
+        let nullification = create_test_nullification::<6, 1, 3>(
+            &nullify_messages,
+            5,
+            wrong_leader,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_nullification(nullification);
         assert!(result.is_err());
@@ -3981,8 +4205,12 @@ mod tests {
         for i in 0..=2 {
             nullify_messages_1.insert(create_test_nullify(i, 1, leader_id_1, &setup));
         }
-        let nullification_1 =
-            create_test_nullification::<6, 1, 3>(&nullify_messages_1, 1, leader_id_1);
+        let nullification_1 = create_test_nullification::<6, 1, 3>(
+            &nullify_messages_1,
+            1,
+            leader_id_1,
+            &setup.peer_set,
+        );
         manager.handle_nullification(nullification_1).unwrap();
 
         // Now at view 2. Progress to view 2 and view 3, each with their nullifications
@@ -3994,8 +4222,12 @@ mod tests {
             for i in 0..=2 {
                 nullify_messages.insert(create_test_nullify(i, view_num as u64, leader_id, &setup));
             }
-            let nullification =
-                create_test_nullification::<6, 1, 3>(&nullify_messages, view_num as u64, leader_id);
+            let nullification = create_test_nullification::<6, 1, 3>(
+                &nullify_messages,
+                view_num as u64,
+                leader_id,
+                &setup.peer_set,
+            );
             manager.handle_nullification(nullification).unwrap();
         }
 
@@ -4008,7 +4240,12 @@ mod tests {
             // Use different peers to create a different nullification
             nullify_messages.insert(create_test_nullify(i, 1, leader_id_1, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id_1);
+        let nullification = create_test_nullification::<6, 1, 3>(
+            &nullify_messages,
+            1,
+            leader_id_1,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_nullification(nullification);
         assert!(result.is_ok());
@@ -4115,8 +4352,13 @@ mod tests {
         for i in 0..=2 {
             m_votes_0.insert(create_test_vote(i, 1, block_hash_0, leader_id_1, &setup));
         }
-        let m_not_0 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_0, 1, block_hash_0, leader_id_1);
+        let m_not_0 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_0,
+            1,
+            block_hash_0,
+            leader_id_1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_not_0).unwrap();
 
         // Now at view 2
@@ -4207,7 +4449,7 @@ mod tests {
         let leader_id = setup.peer_set.sorted_peer_ids[1];
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block = create_test_block(1, leader_id, Block::genesis_hash(), leader_sk.clone(), 1);
-        let msg = ConsensusMessage::BlockProposal(block);
+        let msg = ConsensusMessage::BlockProposal(block.into());
 
         let result = manager.process_consensus_msg(msg);
         assert!(result.is_ok());
@@ -4287,8 +4529,13 @@ mod tests {
         for i in 1..=3 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         manager.handle_m_notarization(m_notarization).unwrap();
 
@@ -4316,7 +4563,8 @@ mod tests {
         for i in 1..=3 {
             nullify_messages.insert(create_test_nullify(i, 1, leader_id, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id, &setup.peer_set);
 
         manager.handle_nullification(nullification).unwrap();
 
@@ -4382,10 +4630,7 @@ mod tests {
         // Add votes to create M-notarization (need >2F = >2 votes for F=1)
         // Leader's vote is already counted, so add 2 more votes (total 3 votes)
         for i in 2..=3 {
-            let peer_id = setup.peer_set.sorted_peer_ids[i];
-            let peer_sk = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-            let signature = peer_sk.sign(&block_hash);
-            let vote = Vote::new(1, block_hash, signature, peer_id, leader_id_0);
+            let vote = create_test_vote(i, 1, block_hash, leader_id_0, &setup);
             manager.handle_vote(vote).unwrap();
         }
 
@@ -4402,10 +4647,13 @@ mod tests {
             .unwrap();
 
         // Add vote for view 0 (now past)
-        let sk = setup.peer_id_to_secret_key.get(&replica_id).unwrap();
-        let signature = sk.sign(&block_hash);
-
-        let result = manager.add_own_vote(1, block_hash, signature);
+        let own_vote = create_test_vote(1, 1, block_hash, leader_id_0, &setup);
+        let result = manager.add_own_vote_with_l_signature(
+            1,
+            block_hash,
+            own_vote.signature,
+            own_vote.l_signature,
+        );
         assert!(result.is_ok());
 
         std::fs::remove_file(path).unwrap();
@@ -4585,8 +4833,13 @@ mod tests {
         for i in 1..=3 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
         let msg = ConsensusMessage::MNotarization(m_notarization);
 
         let result = manager.process_consensus_msg(msg);
@@ -4613,7 +4866,8 @@ mod tests {
         for i in 1..=3 {
             nullify_messages.insert(create_test_nullify(i, 1, leader_id, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id, &setup.peer_set);
         let msg = ConsensusMessage::Nullification(nullification);
 
         let initial_view = manager.current_view_number();
@@ -4668,7 +4922,12 @@ mod tests {
         for i in 1..=3 {
             nullify_messages.insert(create_test_nullify(i, 2, leader_id_2, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 2, leader_id_2);
+        let nullification = create_test_nullification::<6, 1, 3>(
+            &nullify_messages,
+            2,
+            leader_id_2,
+            &setup.peer_set,
+        );
         let msg = ConsensusMessage::Nullification(nullification);
 
         let result = manager.process_consensus_msg(msg);
@@ -4711,8 +4970,12 @@ mod tests {
         for i in 0..3 {
             nullify_messages_1.insert(create_test_nullify(i, 1, view1_leader, &setup));
         }
-        let nullification_1 =
-            create_test_nullification::<6, 1, 3>(&nullify_messages_1, 1, view1_leader);
+        let nullification_1 = create_test_nullification::<6, 1, 3>(
+            &nullify_messages_1,
+            1,
+            view1_leader,
+            &setup.peer_set,
+        );
 
         manager
             .view_chain
@@ -4732,8 +4995,12 @@ mod tests {
         for i in 0..3 {
             nullify_messages.insert(create_test_nullify(i, 1, view1_leader, &setup));
         }
-        let nullification =
-            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, view1_leader);
+        let nullification = create_test_nullification::<6, 1, 3>(
+            &nullify_messages,
+            1,
+            view1_leader,
+            &setup.peer_set,
+        );
         let msg = ConsensusMessage::Nullification(nullification);
 
         let result = manager.process_consensus_msg(msg);
@@ -4770,7 +5037,8 @@ mod tests {
         for i in 1..=3 {
             nullify_messages.insert(create_test_nullify(i, 1, leader_id, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id, &setup.peer_set);
 
         // Add first time
         let msg1 = ConsensusMessage::Nullification(nullification.clone());
@@ -4813,8 +5081,12 @@ mod tests {
         for i in 1..=3 {
             nullify_messages.insert(create_test_nullify(i, 1, wrong_leader, &setup));
         }
-        let nullification =
-            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, wrong_leader);
+        let nullification = create_test_nullification::<6, 1, 3>(
+            &nullify_messages,
+            1,
+            wrong_leader,
+            &setup.peer_set,
+        );
         let msg = ConsensusMessage::Nullification(nullification);
 
         let result = manager.process_consensus_msg(msg);
@@ -4844,16 +5116,10 @@ mod tests {
             create_test_manager(&setup, 1);
 
         let leader_id = setup.peer_set.sorted_peer_ids[1];
-        let peer_ids = [
-            setup.peer_set.sorted_peer_ids[0],
-            setup.peer_set.sorted_peer_ids[2],
-            setup.peer_set.sorted_peer_ids[3],
-        ];
-
         // Create nullification with invalid signature (random signature)
         let wrong_sk = BlsSecretKey::generate(&mut thread_rng());
         let wrong_signature = wrong_sk.sign(&[99u8; 32]);
-        let nullification = Nullification::new(1, leader_id, wrong_signature, peer_ids);
+        let nullification = Nullification::new(1, leader_id, wrong_signature);
         let msg = ConsensusMessage::Nullification(nullification);
 
         let result = manager.process_consensus_msg(msg);
@@ -5053,7 +5319,13 @@ mod tests {
         m_votes.insert(create_test_vote(2, 1, block_hash, leader_id, &setup));
         m_votes.insert(create_test_vote(3, 1, block_hash, leader_id, &setup));
 
-        let m_not = create_test_m_notarization::<6, 1, 3>(&m_votes, 1, block_hash, leader_id);
+        let m_not = create_test_m_notarization::<6, 1, 3>(
+            &m_votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_not).unwrap();
 
         // Now at view 2
@@ -5207,8 +5479,13 @@ mod tests {
         for i in 0..=2 {
             m_votes_1.insert(create_test_vote(i, 1, block_hash_1, leader_id_1, &setup));
         }
-        let m_not_1 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_1, 1, block_hash_1, leader_id_1);
+        let m_not_1 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_1,
+            1,
+            block_hash_1,
+            leader_id_1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_not_1).unwrap();
 
         // Now manager is at View 2. Progress through views 2 and 3.
@@ -5243,6 +5520,7 @@ mod tests {
                 view_num as u64,
                 block_hash,
                 leader_id,
+                &setup.peer_set,
             );
             manager.handle_m_notarization(m_not).unwrap();
 
@@ -5378,8 +5656,13 @@ mod tests {
         for i in 1..=3 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
         assert!(result.is_ok());
@@ -5533,6 +5816,7 @@ mod tests {
                     view_num,
                     [0; blake3::OUT_LEN],
                     leader_id,
+                    &setup.peer_set,
                 );
                 current_view.m_notarization = Some(m_not);
 
@@ -5628,8 +5912,13 @@ mod tests {
             }
 
             // Create and handle M-notarization, which will progress to next view
-            let m_notarization =
-                create_test_m_notarization::<6, 1, 3>(&votes, current_view, block_hash, leader_id);
+            let m_notarization = create_test_m_notarization::<6, 1, 3>(
+                &votes,
+                current_view,
+                block_hash,
+                leader_id,
+                &setup.peer_set,
+            );
             manager.handle_m_notarization(m_notarization).unwrap();
         }
 
@@ -5676,8 +5965,13 @@ mod tests {
         m_votes_1.insert(create_test_vote(2, 1, block_hash_1, leader_id_1, &setup));
         m_votes_1.insert(create_test_vote(3, 1, block_hash_1, leader_id_1, &setup));
 
-        let m_notarization_1 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_1, 1, block_hash_1, leader_id_1);
+        let m_notarization_1 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_1,
+            1,
+            block_hash_1,
+            leader_id_1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_notarization_1).unwrap();
 
         // Now in View 2
@@ -5703,8 +5997,13 @@ mod tests {
         for i in 0..3 {
             m_votes_2.insert(create_test_vote(i, 2, block_hash_2, leader_id_2, &setup));
         }
-        let m_notarization_2 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_2, 2, block_hash_2, leader_id_2);
+        let m_notarization_2 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_2,
+            2,
+            block_hash_2,
+            leader_id_2,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_notarization_2).unwrap();
 
         // Now in View 3
@@ -5736,8 +6035,13 @@ mod tests {
             for i in 2..=4 {
                 votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
             }
-            let m_notarization =
-                create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+            let m_notarization = create_test_m_notarization::<6, 1, 3>(
+                &votes,
+                1,
+                block_hash,
+                leader_id,
+                &setup.peer_set,
+            );
 
             let result = manager.handle_m_notarization(m_notarization);
             assert!(result.is_ok());
@@ -5761,8 +6065,12 @@ mod tests {
             for i in 0..3 {
                 nullify_messages.insert(create_test_nullify(i, 1, leader_id, &setup));
             }
-            let nullification =
-                create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id);
+            let nullification = create_test_nullification::<6, 1, 3>(
+                &nullify_messages,
+                1,
+                leader_id,
+                &setup.peer_set,
+            );
 
             let result = manager.handle_nullification(nullification);
             assert!(result.is_ok());
@@ -5812,8 +6120,13 @@ mod tests {
         for i in 1..=3 {
             m_votes_1.insert(create_test_vote(i, 1, block_hash_1, leader_id_1, &setup));
         }
-        let m_not_1 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_1, 1, block_hash_1, leader_id_1);
+        let m_not_1 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_1,
+            1,
+            block_hash_1,
+            leader_id_1,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_not_1);
         assert!(result.is_ok());
@@ -5827,8 +6140,12 @@ mod tests {
         for i in 0..=2 {
             nullify_messages_2.insert(create_test_nullify(i, 2, leader_id_2, &setup));
         }
-        let nullification_2 =
-            create_test_nullification::<6, 1, 3>(&nullify_messages_2, 2, leader_id_2);
+        let nullification_2 = create_test_nullification::<6, 1, 3>(
+            &nullify_messages_2,
+            2,
+            leader_id_2,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_nullification(nullification_2);
         assert!(result.is_ok());
@@ -5840,8 +6157,12 @@ mod tests {
         for i in 0..=2 {
             nullify_messages_3.insert(create_test_nullify(i, 3, leader_id_3, &setup));
         }
-        let nullification_3 =
-            create_test_nullification::<6, 1, 3>(&nullify_messages_3, 3, leader_id_3);
+        let nullification_3 = create_test_nullification::<6, 1, 3>(
+            &nullify_messages_3,
+            3,
+            leader_id_3,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_nullification(nullification_3);
         assert!(result.is_ok());
@@ -5903,8 +6224,12 @@ mod tests {
         for i in 2..=4 {
             nullify_messages_0.insert(create_test_nullify(i, 1, leader_id_0, &setup));
         }
-        let nullification_0 =
-            create_test_nullification::<6, 1, 3>(&nullify_messages_0, 1, leader_id_0);
+        let nullification_0 = create_test_nullification::<6, 1, 3>(
+            &nullify_messages_0,
+            1,
+            leader_id_0,
+            &setup.peer_set,
+        );
 
         let result = manager.handle_nullification(nullification_0);
         assert!(result.is_ok());
@@ -5957,8 +6282,13 @@ mod tests {
         for i in 1..=3 {
             m_votes_1.insert(create_test_vote(i, 1, block_hash_1, leader_id_1, &setup));
         }
-        let m_not_1 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_1, 1, block_hash_1, leader_id_1);
+        let m_not_1 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_1,
+            1,
+            block_hash_1,
+            leader_id_1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_not_1).unwrap();
 
         // Now at View 2
@@ -5978,8 +6308,13 @@ mod tests {
         for i in 0..=2 {
             m_votes_2.insert(create_test_vote(i, 2, block_hash_2, leader_id_2, &setup));
         }
-        let m_not_2 =
-            create_test_m_notarization::<6, 1, 3>(&m_votes_2, 2, block_hash_2, leader_id_2);
+        let m_not_2 = create_test_m_notarization::<6, 1, 3>(
+            &m_votes_2,
+            2,
+            block_hash_2,
+            leader_id_2,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_not_2).unwrap();
 
         // Now at View 3
@@ -5991,8 +6326,12 @@ mod tests {
         for i in 0..=2 {
             nullify_messages_3.insert(create_test_nullify(i, 3, leader_id_3, &setup));
         }
-        let nullification_3 =
-            create_test_nullification::<6, 1, 3>(&nullify_messages_3, 3, leader_id_3);
+        let nullification_3 = create_test_nullification::<6, 1, 3>(
+            &nullify_messages_3,
+            3,
+            leader_id_3,
+            &setup.peer_set,
+        );
         manager.handle_nullification(nullification_3).unwrap();
 
         // Now at View 4
@@ -6029,8 +6368,13 @@ mod tests {
         for i in 2..=4 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         // First M-notarization should have should_forward_m_notarization = true
         let result = manager.handle_m_notarization(m_notarization);
@@ -6083,8 +6427,13 @@ mod tests {
         for i in 2..=4 {
             votes.insert(create_test_vote(i, 1, block_hash, leader_id, &setup));
         }
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash, leader_id);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash,
+            leader_id,
+            &setup.peer_set,
+        );
 
         // First call - should progress to view 2 with should_forward = true
         let first_result = manager
@@ -6137,7 +6486,8 @@ mod tests {
         for i in 0..3 {
             nullify_messages.insert(create_test_nullify(i, 1, leader_id, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id, &setup.peer_set);
 
         // First nullification should trigger broadcast
         let result = manager.handle_nullification(nullification);
@@ -6176,7 +6526,8 @@ mod tests {
         for i in 0..3 {
             nullify_messages.insert(create_test_nullify(i, 1, leader_id, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id, &setup.peer_set);
 
         // Add first time
         manager.handle_nullification(nullification.clone()).unwrap();
@@ -6514,8 +6865,13 @@ mod tests {
         }
 
         // Manually create M-notarization for view 2
-        let m_not_2 =
-            create_test_m_notarization::<6, 1, 3>(&votes_view_2, 2, block_hash_2, leader_id_2);
+        let m_not_2 = create_test_m_notarization::<6, 1, 3>(
+            &votes_view_2,
+            2,
+            block_hash_2,
+            leader_id_2,
+            &setup.peer_set,
+        );
         let view_2_mut = manager.view_chain.non_finalized_views.get_mut(&2).unwrap();
         view_2_mut.m_notarization = Some(m_not_2);
 
@@ -6602,8 +6958,13 @@ mod tests {
         }
 
         // Manually create and insert M-notarization
-        let m_not_2 =
-            create_test_m_notarization::<6, 1, 3>(&votes_view_2, 2, block_hash_2, leader_id_2);
+        let m_not_2 = create_test_m_notarization::<6, 1, 3>(
+            &votes_view_2,
+            2,
+            block_hash_2,
+            leader_id_2,
+            &setup.peer_set,
+        );
         let view_2_mut = manager.view_chain.non_finalized_views.get_mut(&2).unwrap();
         view_2_mut.m_notarization = Some(m_not_2);
 
@@ -6640,7 +7001,12 @@ mod tests {
         for i in 0..3 {
             nullify_messages.insert(create_test_nullify(i, 1, leader_id_1, &setup));
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_id_1);
+        let nullification = create_test_nullification::<6, 1, 3>(
+            &nullify_messages,
+            1,
+            leader_id_1,
+            &setup.peer_set,
+        );
         manager.handle_nullification(nullification).unwrap();
 
         // Now try to add block for view 2 with parent = block_hash_1
@@ -6676,8 +7042,13 @@ mod tests {
                 &setup,
             ));
         }
-        let m_notarization =
-            create_test_m_notarization(&votes, 1, [0u8; 32], manager.leader_for_view(1).unwrap());
+        let m_notarization = create_test_m_notarization(
+            &votes,
+            1,
+            [0u8; 32],
+            manager.leader_for_view(1).unwrap(),
+            &setup.peer_set,
+        );
 
         let result = manager.handle_m_notarization(m_notarization);
 
@@ -6723,22 +7094,19 @@ mod tests {
         let voter_indices = [0, 2, 3];
         let mut votes = HashSet::new();
         for &i in &voter_indices {
-            let voter_id = setup.peer_set.sorted_peer_ids[i];
-            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
-            let vote = Vote::new(
-                1,
-                block_hash_v1,
-                voter_sk.sign(&block_hash_v1),
-                voter_id,
-                leader_v1,
-            );
+            let vote = create_test_vote(i, 1, block_hash_v1, leader_v1, &setup);
             votes.insert(vote.clone());
             manager.handle_vote(vote).unwrap();
         }
 
         // Create and process M-notarization to actually progress to view 2
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_v1, leader_v1);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash_v1,
+            leader_v1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_notarization).unwrap();
 
         // Verify we're now in view 2
@@ -6748,15 +7116,8 @@ mod tests {
         let conflicting_block_hash = [99u8; 32];
         let conflicting_voter_indices = [4, 5];
         for &i in &conflicting_voter_indices {
-            let voter_id = setup.peer_set.sorted_peer_ids[i];
-            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
-            let conflicting_vote = Vote::new(
-                1,
-                conflicting_block_hash,
-                voter_sk.sign(&conflicting_block_hash),
-                voter_id,
-                leader_v1,
-            );
+            let conflicting_vote =
+                create_test_vote(i, 1, conflicting_block_hash, leader_v1, &setup);
             let result = manager.handle_vote(conflicting_vote);
 
             // Check if we get ShouldNullifyRange when threshold is reached
@@ -6794,22 +7155,19 @@ mod tests {
         let voter_indices = [0, 2, 3];
         let mut votes = HashSet::new();
         for &i in &voter_indices {
-            let voter_id = setup.peer_set.sorted_peer_ids[i];
-            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
-            let vote = Vote::new(
-                1,
-                block_hash_v1,
-                voter_sk.sign(&block_hash_v1),
-                voter_id,
-                leader_v1,
-            );
+            let vote = create_test_vote(i, 1, block_hash_v1, leader_v1, &setup);
             votes.insert(vote.clone());
             manager.handle_vote(vote).unwrap();
         }
 
         // Create and process M-notarization to actually progress to view 2
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_v1, leader_v1);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash_v1,
+            leader_v1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_notarization).unwrap();
 
         // Verify we're now in view 2
@@ -6866,22 +7224,19 @@ mod tests {
         let voter_indices = [0, 2, 3];
         let mut votes = HashSet::new();
         for &i in &voter_indices {
-            let voter_id = setup.peer_set.sorted_peer_ids[i];
-            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
-            let vote = Vote::new(
-                1,
-                block_hash_v1,
-                voter_sk.sign(&block_hash_v1),
-                voter_id,
-                leader_v1,
-            );
+            let vote = create_test_vote(i, 1, block_hash_v1, leader_v1, &setup);
             votes.insert(vote.clone());
             manager.handle_vote(vote).unwrap();
         }
 
         // Create and process M-notarization to actually progress to view 2
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_v1, leader_v1);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash_v1,
+            leader_v1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_notarization).unwrap();
 
         // Verify we're now in view 2
@@ -6894,7 +7249,8 @@ mod tests {
             nullify_messages.insert(nullify);
         }
 
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_v1);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 1, leader_v1, &setup.peer_set);
 
         // Process the aggregated nullification for the past view
         let result = manager.handle_nullification(nullification);
@@ -6936,22 +7292,19 @@ mod tests {
         let voter_indices = [0, 2, 3];
         let mut votes = HashSet::new();
         for &i in &voter_indices {
-            let voter_id = setup.peer_set.sorted_peer_ids[i];
-            let voter_sk = setup.peer_id_to_secret_key.get(&voter_id).unwrap();
-            let vote = Vote::new(
-                1,
-                block_hash_v1,
-                voter_sk.sign(&block_hash_v1),
-                voter_id,
-                leader_v1,
-            );
+            let vote = create_test_vote(i, 1, block_hash_v1, leader_v1, &setup);
             votes.insert(vote.clone());
             manager.handle_vote(vote).unwrap();
         }
 
         // Create and process M-notarization to actually progress to view 2
-        let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 1, block_hash_v1, leader_v1);
+        let m_notarization = create_test_m_notarization::<6, 1, 3>(
+            &votes,
+            1,
+            block_hash_v1,
+            leader_v1,
+            &setup.peer_set,
+        );
         manager.handle_m_notarization(m_notarization).unwrap();
 
         // Now in view 2
@@ -6994,7 +7347,7 @@ mod tests {
         for peer_id in &setup.peer_set.sorted_peer_ids {
             let pk = setup.peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             let peer_str = hex::encode(buf);
             peer_strs.push(peer_str);
         }
@@ -7011,18 +7364,16 @@ mod tests {
         let persistence_storage = Arc::new(ConsensusStore::open(&path).unwrap());
         let (persistence_writer, _persistence_reader) =
             PendingStateWriter::new(persistence_storage.clone(), 0);
-        (
-            ViewProgressManager::new(
-                config,
-                replica_id,
-                leader_manager,
-                persistence_writer,
-                logger,
-            )
-            .unwrap(),
-            _persistence_reader.clone(),
-            path,
+        let mut manager = ViewProgressManager::new(
+            config,
+            replica_id,
+            leader_manager,
+            persistence_writer,
+            logger,
         )
+        .unwrap();
+        manager.peers = setup.peer_set.clone();
+        (manager, _persistence_reader.clone(), path)
     }
 
     /// Creates a test StateDiff for a specific address
@@ -7191,7 +7542,7 @@ mod tests {
             .map(|pid| {
                 let pk = setup.peer_set.id_to_public_key.get(pid).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 hex::encode(buf)
             })
             .collect();
@@ -7264,7 +7615,7 @@ mod tests {
             .map(|pid| {
                 let pk = setup.peer_set.id_to_public_key.get(pid).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 hex::encode(buf)
             })
             .collect();
@@ -7309,7 +7660,7 @@ mod tests {
             .map(|pid| {
                 let pk = setup.peer_set.id_to_public_key.get(pid).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 hex::encode(buf)
             })
             .collect();
@@ -7422,7 +7773,7 @@ mod tests {
             .map(|pid| {
                 let pk = setup.peer_set.id_to_public_key.get(pid).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 hex::encode(buf)
             })
             .collect();
@@ -7445,17 +7796,16 @@ mod tests {
         let (persistence_writer, _persistence_reader) =
             PendingStateWriter::new(persistence_storage.clone(), 0);
 
-        (
-            ViewProgressManager::new(
-                config,
-                replica_id,
-                leader_manager,
-                persistence_writer,
-                logger,
-            )
-            .unwrap(),
-            path,
+        let mut manager = ViewProgressManager::new(
+            config,
+            replica_id,
+            leader_manager,
+            persistence_writer,
+            logger,
         )
+        .unwrap();
+        manager.peers = setup.peer_set.clone();
+        (manager, path)
     }
 
     /// Creates a block with custom transactions for testing validation

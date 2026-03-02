@@ -54,7 +54,7 @@ use crate::{
         CollectedNullificationsResult, CollectedVotesResult, LeaderProposalResult, ShouldMNotarize,
         ViewContext,
     },
-    crypto::aggregated::BlsSignature,
+    crypto::consensus_bls::{ThresholdPartialSignature, ThresholdProof},
     state::{
         block::Block,
         leader::Leader,
@@ -452,6 +452,27 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         state_diff: Arc<StateDiff>,
         peers: &PeerSet,
     ) -> Result<LeaderProposalResult> {
+        let leader_partial = ThresholdPartialSignature(block.leader_signature);
+        self.add_block_proposal_with_leader_vote(
+            view_number,
+            block,
+            leader_partial,
+            leader_partial,
+            state_diff,
+            peers,
+        )
+    }
+
+    /// Adds a block proposal, including leader implicit vote threshold signatures.
+    pub fn add_block_proposal_with_leader_vote(
+        &mut self,
+        view_number: u64,
+        block: Block,
+        leader_m_signature: ThresholdPartialSignature,
+        leader_l_signature: ThresholdPartialSignature,
+        state_diff: Arc<StateDiff>,
+        peers: &PeerSet,
+    ) -> Result<LeaderProposalResult> {
         // Check if view exists in non-finalized views
         let ctx = self
             .non_finalized_views
@@ -532,6 +553,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
             // Store block and state_diff for later processing when parent gets notarized
             let block_hash = block.get_hash();
             ctx.pending_block = Some(block);
+            ctx.pending_leader_m_signature = Some(leader_m_signature);
+            ctx.pending_leader_l_signature = Some(leader_l_signature);
             ctx.state_diff = Some(state_diff);
             return Ok(LeaderProposalResult {
                 block_hash,
@@ -545,7 +568,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         }
 
         // Add block to the view context
-        let result = ctx.add_new_view_block(block, state_diff, peers);
+        let result = ctx.add_new_view_block_with_leader_vote(
+            block,
+            leader_m_signature,
+            leader_l_signature,
+            state_diff,
+            peers,
+        );
 
         // If this view already has M-notarization (block arrived after votes crossed
         // the threshold via network messages), retroactively publish the StateDiff
@@ -1202,12 +1231,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
 
         // Persist leader metadata
         let leader_id = ctx.leader_id;
-        let leader = Leader::new(leader_id, view_number);
+        let leader_index = peers.get_index(&leader_id)?;
+        let leader = Leader::new(leader_id, leader_index, view_number);
         self.persistence_writer.put_leader(&leader)?;
 
         // Persist view metadata (marked as finalized)
         let leader_pk = peers.id_to_public_key.get(&leader_id).unwrap();
-        let view = View::new(view_number, leader_pk.clone(), true, false);
+        let view = View::new(view_number, *leader_pk, true, false);
         self.persistence_writer.put_view(&view)?;
 
         // Persist all votes
@@ -1216,17 +1246,20 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         }
 
         // Create and persist the L-notarization (finality certificate for light clients)
-        // Aggregate all vote signatures and collect peer IDs
-        let aggregated_signature = BlsSignature::aggregate(ctx.votes.iter().map(|v| &v.signature));
-        let peer_ids: Vec<_> = ctx.votes.iter().map(|v| v.peer_id).collect();
+        // Combine threshold partial signatures in deterministic peer_id order.
+        let mut sorted_votes: Vec<_> = ctx.votes.iter().collect();
+        sorted_votes.sort_by_key(|vote| vote.peer_id);
+        let partials: Vec<_> = sorted_votes
+            .iter()
+            .map(|vote| {
+                let participant_index = peers.get_index(&vote.peer_id)?;
+                Ok((participant_index, vote.l_signature))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let aggregated_signature = ThresholdProof::combine_partials(&partials)?;
 
-        let l_notarization = LNotarization::<N, F>::new(
-            view_number,
-            block_hash,
-            aggregated_signature,
-            peer_ids,
-            height,
-        );
+        let l_notarization =
+            LNotarization::<N, F>::new(view_number, block_hash, aggregated_signature, height);
         self.persistence_writer
             .put_l_notarization(&l_notarization)?;
 
@@ -1320,11 +1353,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
 
         // Persist leader and view metadata
         let leader_id = ctx.leader_id;
-        let leader = Leader::new(leader_id, view_number);
+        let leader_index = peers.get_index(&leader_id)?;
+        let leader = Leader::new(leader_id, leader_index, view_number);
         self.persistence_writer.put_leader(&leader)?;
 
         let leader_pk = peers.id_to_public_key.get(&leader_id).unwrap();
-        let view = View::new(view_number, leader_pk.clone(), true, false); // Finalized (committed via child), not nullified
+        let view = View::new(view_number, *leader_pk, true, false); // Finalized (committed via child), not nullified
         self.persistence_writer.put_view(&view)?;
 
         // Persist the votes
@@ -1361,11 +1395,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
             self.persistence_writer.put_m_notarization(m_notarization)?;
         }
 
-        let leader = Leader::new(ctx.leader_id, view_number);
+        let leader_index = peers.get_index(&ctx.leader_id)?;
+        let leader = Leader::new(ctx.leader_id, leader_index, view_number);
         self.persistence_writer.put_leader(&leader)?;
 
         let leader_pk = peers.id_to_public_key.get(&ctx.leader_id).unwrap();
-        let view = View::new(view_number, leader_pk.clone(), false, true);
+        let view = View::new(view_number, *leader_pk, false, true);
         self.persistence_writer.put_view(&view)?;
 
         for vote in ctx.votes.iter() {
@@ -1429,12 +1464,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
 
         // Persist leader metadata
         let leader_id = ctx.leader_id;
-        let leader = Leader::new(leader_id, view_number);
+        let leader_index = peers.get_index(&leader_id)?;
+        let leader = Leader::new(leader_id, leader_index, view_number);
         self.persistence_writer.put_leader(&leader)?;
 
         // Persist view metadata (marked as nullified)
         let leader_pk = peers.id_to_public_key.get(&leader_id).unwrap();
-        let view = View::new(view_number, leader_pk.clone(), false, true); // nullified=true
+        let view = View::new(view_number, *leader_pk, false, true); // nullified=true
         self.persistence_writer.put_view(&view)?;
 
         // Persist votes (if any were collected before nullification)
@@ -1476,21 +1512,59 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         peers: &PeerSet,
     ) -> Result<Vec<LeaderProposalResult>> {
         let mut results = vec![];
-        let mut pending: Vec<(u64, Block, Arc<StateDiff>)> = vec![];
+        let mut pending: Vec<(
+            u64,
+            Block,
+            ThresholdPartialSignature,
+            ThresholdPartialSignature,
+            Arc<StateDiff>,
+        )> = vec![];
 
         // First, collect all pending blocks
         for (view_number, ctx) in &mut self.non_finalized_views {
-            if *view_number > notarized_view
-                && let Some(block) = ctx.pending_block.take()
-                && let Some(state_diff) = ctx.state_diff.take()
-            {
-                pending.push((*view_number, block, state_diff));
+            if *view_number <= notarized_view {
+                continue;
             }
+            let Some(block) = ctx.pending_block.take() else {
+                continue;
+            };
+            let leader_m_signature = ctx.pending_leader_m_signature.take().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Pending block for view {} is missing leader M-signature",
+                    view_number
+                )
+            })?;
+            let leader_l_signature = ctx.pending_leader_l_signature.take().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Pending block for view {} is missing leader L-signature",
+                    view_number
+                )
+            })?;
+            let state_diff = ctx.state_diff.take().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Pending block for view {} is missing state diff",
+                    view_number
+                )
+            })?;
+            pending.push((
+                *view_number,
+                block,
+                leader_m_signature,
+                leader_l_signature,
+                state_diff,
+            ));
         }
 
         // Then process them (this avoids borrow checker issues)
-        for (view_number, block, state_diff) in pending {
-            let result = self.add_block_proposal(view_number, block, state_diff, peers)?;
+        for (view_number, block, leader_m_signature, leader_l_signature, state_diff) in pending {
+            let result = self.add_block_proposal_with_leader_vote(
+                view_number,
+                block,
+                leader_m_signature,
+                leader_l_signature,
+                state_diff,
+                peers,
+            )?;
             results.push(result);
         }
 
@@ -1658,12 +1732,13 @@ mod tests {
             create_nullification_data,
         },
         crypto::{
-            aggregated::{BlsSecretKey, PeerId},
+            consensus_bls::{BlsSecretKey, BlsSignature, PeerId, ThresholdPartialSignature},
             transaction_crypto::TxSecretKey,
         },
         state::{address::Address, block::Block, transaction::Transaction},
         storage::{conversions::Storable, store::ConsensusStore},
     };
+    use crypto::dkg::run_in_memory_dual_dkg;
     use rand::thread_rng;
     use std::collections::{HashMap, HashSet};
     use tempfile::TempDir;
@@ -1684,18 +1759,38 @@ mod tests {
     impl TestSetup {
         fn new(num_peers: usize) -> Self {
             let mut rng = thread_rng();
-            let mut public_keys = vec![];
             let mut peer_id_to_secret_key = HashMap::new();
+            let f = std::cmp::max(1, (num_peers - 1) / 5);
+            let dual_dkg = run_in_memory_dual_dkg(num_peers, f, &mut rng)
+                .expect("in-memory dual DKG for tests must succeed");
+            let mut public_keys = Vec::with_capacity(num_peers);
+            let mut indices = Vec::with_capacity(num_peers);
+            let mut id_to_m_share_public_key = HashMap::with_capacity(num_peers);
+            let mut id_to_l_share_public_key = HashMap::with_capacity(num_peers);
 
-            for _ in 0..num_peers {
-                let sk = BlsSecretKey::generate(&mut rng);
+            for participant in dual_dkg.m_nullify.participant_shares {
+                let mut sk_bytes = participant.secret_share.to_bytes_le();
+                sk_bytes.reverse();
+                let sk = BlsSecretKey(sk_bytes);
                 let pk = sk.public_key();
                 let peer_id = pk.to_peer_id();
                 peer_id_to_secret_key.insert(peer_id, sk);
                 public_keys.push(pk);
+                indices.push(participant.participant_index);
+                id_to_m_share_public_key.insert(peer_id, pk);
+                id_to_l_share_public_key.insert(peer_id, pk);
             }
 
-            let peer_set = PeerSet::new(public_keys);
+            let peer_set = PeerSet::with_threshold_material(
+                public_keys,
+                indices,
+                id_to_m_share_public_key,
+                id_to_l_share_public_key,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("threshold peer set");
 
             // Create temporary storage
             let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -1782,8 +1877,24 @@ mod tests {
     ) -> Vote {
         let peer_id = peer_set.sorted_peer_ids[peer_index];
         let secret_key = peer_id_to_secret_key.get(&peer_id).unwrap();
-        let signature = secret_key.sign(&block_hash);
-        Vote::new(view, block_hash, signature, peer_id, leader_id)
+        let m_domain = peer_set.m_not_domain.as_ref().expect("m_not domain");
+        let l_domain = peer_set.l_not_domain.as_ref().expect("l_not domain");
+        let mut m_message = Vec::with_capacity(m_domain.len() + block_hash.len());
+        m_message.extend_from_slice(m_domain);
+        m_message.extend_from_slice(&block_hash);
+        let mut l_message = Vec::with_capacity(l_domain.len() + block_hash.len());
+        l_message.extend_from_slice(l_domain);
+        l_message.extend_from_slice(&block_hash);
+        let m_signature = ThresholdPartialSignature(BlsSignature(secret_key.sign(&m_message).0));
+        let l_signature = ThresholdPartialSignature(BlsSignature(secret_key.sign(&l_message).0));
+        Vote::new_with_threshold_signatures(
+            view,
+            block_hash,
+            m_signature,
+            l_signature,
+            peer_id,
+            leader_id,
+        )
     }
 
     /// Creates a signed nullify message
@@ -1796,8 +1907,12 @@ mod tests {
     ) -> Nullify {
         let peer_id = peer_set.sorted_peer_ids[peer_index];
         let secret_key = peer_id_to_secret_key.get(&peer_id).unwrap();
-        let message = blake3::hash(&[view.to_le_bytes(), leader_id.to_le_bytes()].concat());
-        let signature = secret_key.sign(message.as_bytes());
+        let nullify_domain = peer_set.nullify_domain.as_ref().expect("nullify domain");
+        let message_hash = blake3::hash(&[view.to_le_bytes(), leader_id.to_le_bytes()].concat());
+        let mut message = Vec::with_capacity(nullify_domain.len() + message_hash.as_bytes().len());
+        message.extend_from_slice(nullify_domain);
+        message.extend_from_slice(message_hash.as_bytes());
+        let signature = ThresholdPartialSignature(BlsSignature(secret_key.sign(&message).0));
         Nullify::new(view, leader_id, signature, peer_id)
     }
 
@@ -1807,12 +1922,12 @@ mod tests {
         view: u64,
         block_hash: [u8; blake3::OUT_LEN],
         leader_id: PeerId,
+        peer_set: &PeerSet,
     ) -> MNotarization<N, F, M_SIZE> {
         let NotarizationData {
-            peer_ids,
             aggregated_signature,
-        } = create_notarization_data::<M_SIZE>(votes).unwrap();
-        MNotarization::new(view, block_hash, aggregated_signature, peer_ids, leader_id)
+        } = create_notarization_data::<M_SIZE>(votes, peer_set).unwrap();
+        MNotarization::new(view, block_hash, aggregated_signature, leader_id)
     }
 
     /// Creates a test nullification from nullify messages
@@ -1820,12 +1935,12 @@ mod tests {
         nullify_messages: &HashSet<Nullify>,
         view: u64,
         leader_id: PeerId,
+        peer_set: &PeerSet,
     ) -> Nullification<N, F, M_SIZE> {
         let NullificationData {
-            peer_ids,
             aggregated_signature,
-        } = create_nullification_data::<M_SIZE>(nullify_messages).unwrap();
-        Nullification::new(view, leader_id, aggregated_signature, peer_ids)
+        } = create_nullification_data::<M_SIZE>(nullify_messages, peer_set).unwrap();
+        Nullification::new(view, leader_id, aggregated_signature)
     }
 
     /// Creates a ViewContext with a block and votes for testing
@@ -1981,7 +2096,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_notarization = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_notarization =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_notarization, &setup.peer_set)
             .unwrap();
@@ -2179,7 +2295,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_notarization = create_m_notarization(&votes, 1, block_hash_v1, leader_id);
+        let m_notarization =
+            create_m_notarization(&votes, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_notarization, &setup.peer_set)
             .unwrap();
@@ -2275,7 +2392,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_notarization = create_m_notarization(&votes, 1, block_hash_v1, leader_id);
+        let m_notarization =
+            create_m_notarization(&votes, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_notarization, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -2326,7 +2444,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -2359,7 +2478,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v2 = create_m_notarization(&votes_v2, 2, block_hash_v2, leader_id);
+        let m_not_v2 =
+            create_m_notarization(&votes_v2, 2, block_hash_v2, leader_id, &setup.peer_set);
         ctx_v2.add_m_notarization(m_not_v2, peer_set).unwrap();
 
         view_chain.progress_with_m_notarization(ctx_v2).unwrap();
@@ -2421,7 +2541,7 @@ mod tests {
             ctx_v1.add_nullify(nullify.clone(), peer_set).unwrap();
         }
 
-        let nullification = create_nullification(&nullifies, 1, leader_id);
+        let nullification = create_nullification(&nullifies, 1, leader_id, &setup.peer_set);
         ctx_v1.add_nullification(nullification, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -2511,7 +2631,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -2598,7 +2719,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -2643,7 +2765,8 @@ mod tests {
                     )
                 })
                 .collect();
-            let m_not = create_m_notarization(&votes, view_num, block_hash, leader_id);
+            let m_not =
+                create_m_notarization(&votes, view_num, block_hash, leader_id, &setup.peer_set);
             ctx.add_m_notarization(m_not, peer_set).unwrap();
 
             view_chain.progress_with_m_notarization(ctx).unwrap();
@@ -2717,7 +2840,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -2801,7 +2925,7 @@ mod tests {
                 )
             })
             .collect();
-        let m_not = create_m_notarization(&votes, 10, block_hash_v10, leader_id);
+        let m_not = create_m_notarization(&votes, 10, block_hash_v10, leader_id, &setup.peer_set);
         ctx_v10.add_m_notarization(m_not, &setup.peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -2853,7 +2977,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_notarization = create_m_notarization(&votes, 1, block_hash_v1, leader_id);
+        let m_notarization =
+            create_m_notarization(&votes, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_notarization, &setup.peer_set)
             .unwrap();
@@ -2921,7 +3046,7 @@ mod tests {
                 )
             })
             .collect();
-        let m_not = create_m_notarization(&votes_m, 1, block_hash_v1, leader_id);
+        let m_not = create_m_notarization(&votes_m, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not, &setup.peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -2980,7 +3105,7 @@ mod tests {
         for nullify in nullifies_v1.iter() {
             ctx_v1.add_nullify(nullify.clone(), peer_set).unwrap();
         }
-        let nullification_v1 = create_nullification(&nullifies_v1, 1, leader_id);
+        let nullification_v1 = create_nullification(&nullifies_v1, 1, leader_id, &setup.peer_set);
         ctx_v1
             .add_nullification(nullification_v1, peer_set)
             .unwrap();
@@ -3056,7 +3181,7 @@ mod tests {
                 .route_nullify(nullify.clone(), &setup.peer_set)
                 .unwrap();
         }
-        let nullification = create_nullification(&nullifies, 1, leader_id);
+        let nullification = create_nullification(&nullifies, 1, leader_id, &setup.peer_set);
         view_chain
             .route_nullification(nullification, &setup.peer_set)
             .unwrap();
@@ -3129,7 +3254,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         view_chain.route_m_notarization(m_not_v1, peer_set).unwrap();
 
         // Progress to view 2
@@ -3143,7 +3269,7 @@ mod tests {
         for nullify in nullifies_v2.iter() {
             view_chain.route_nullify(nullify.clone(), peer_set).unwrap();
         }
-        let nullification_v2 = create_nullification(&nullifies_v2, 2, leader_id);
+        let nullification_v2 = create_nullification(&nullifies_v2, 2, leader_id, &setup.peer_set);
         view_chain
             .route_nullification(nullification_v2, &setup.peer_set)
             .unwrap();
@@ -3204,7 +3330,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -3222,7 +3349,7 @@ mod tests {
         for nullify in nullifies.iter() {
             ctx_v2.add_nullify(nullify.clone(), peer_set).unwrap();
         }
-        let nullification_v2 = create_nullification(&nullifies, 2, leader_id);
+        let nullification_v2 = create_nullification(&nullifies, 2, leader_id, &setup.peer_set);
         ctx_v2
             .add_nullification(nullification_v2, &setup.peer_set)
             .unwrap();
@@ -3280,7 +3407,8 @@ mod tests {
             let vote = create_vote(i, 1, block_hash, leader_id, peer_set, peer_id_to_secret_key);
             votes.insert(vote);
         }
-        let m_notarization = create_m_notarization(&votes, 1, block_hash, leader_id);
+        let m_notarization =
+            create_m_notarization(&votes, 1, block_hash, leader_id, &setup.peer_set);
 
         // Route M-notarization
         let result = view_chain.route_m_notarization(m_notarization, peer_set);
@@ -3326,7 +3454,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -3343,7 +3472,7 @@ mod tests {
         for nullify in nullifies_v2.iter() {
             ctx_v2.add_nullify(nullify.clone(), peer_set).unwrap();
         }
-        let nullification_v2 = create_nullification(&nullifies_v2, 2, leader_id);
+        let nullification_v2 = create_nullification(&nullifies_v2, 2, leader_id, &setup.peer_set);
         ctx_v2
             .add_nullification(nullification_v2, &setup.peer_set)
             .unwrap();
@@ -3372,7 +3501,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v3 = create_m_notarization(&votes_v3, 3, block_hash_v3, leader_id);
+        let m_not_v3 =
+            create_m_notarization(&votes_v3, 3, block_hash_v3, leader_id, &setup.peer_set);
         ctx_v3.add_m_notarization(m_not_v3, peer_set).unwrap();
         view_chain.progress_with_nullification(ctx_v3).unwrap();
 
@@ -3441,7 +3571,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -3502,7 +3633,7 @@ mod tests {
         for nullify in nullifies.iter() {
             ctx_v1.add_nullify(nullify.clone(), peer_set).unwrap();
         }
-        let nullification = create_nullification(&nullifies, 1, leader_id);
+        let nullification = create_nullification(&nullifies, 1, leader_id, &setup.peer_set);
         ctx_v1.add_nullification(nullification, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -3574,7 +3705,7 @@ mod tests {
         for nullify in nullifies.iter() {
             view_chain.route_nullify(nullify.clone(), peer_set).unwrap();
         }
-        let nullification = create_nullification(&nullifies, 1, leader_id);
+        let nullification = create_nullification(&nullifies, 1, leader_id, &setup.peer_set);
         view_chain
             .route_nullification(nullification, peer_set)
             .unwrap();
@@ -3650,7 +3781,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -3728,7 +3860,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -3791,7 +3924,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -3823,7 +3957,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v2 = create_m_notarization(&votes_v2_m, 2, block_hash_v2, leader_id);
+        let m_not_v2 =
+            create_m_notarization(&votes_v2_m, 2, block_hash_v2, leader_id, &setup.peer_set);
         ctx_v2.add_m_notarization(m_not_v2, peer_set).unwrap();
 
         view_chain.progress_with_m_notarization(ctx_v2).unwrap();
@@ -3890,7 +4025,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1_m, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1_m, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1.add_m_notarization(m_not_v1, peer_set).unwrap();
 
         let mut view_chain = ViewChain::<N, F, M_SIZE>::new(
@@ -3916,7 +4052,8 @@ mod tests {
             for nullify in nullifies.iter() {
                 view_chain.route_nullify(nullify.clone(), peer_set).unwrap();
             }
-            let nullification = create_nullification(&nullifies, view_num, leader_id);
+            let nullification =
+                create_nullification(&nullifies, view_num, leader_id, &setup.peer_set);
             view_chain
                 .route_nullification(nullification, peer_set)
                 .unwrap();
@@ -3945,7 +4082,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v5 = create_m_notarization(&votes_v5_m, 5, block_hash_v5, leader_id);
+        let m_not_v5 =
+            create_m_notarization(&votes_v5_m, 5, block_hash_v5, leader_id, &setup.peer_set);
         ctx_v5.add_m_notarization(m_not_v5, peer_set).unwrap();
 
         view_chain.current_view = 5;
@@ -4001,7 +4139,7 @@ mod tests {
         for nullify in nullifies_v1.iter() {
             view_chain.route_nullify(nullify.clone(), peer_set).unwrap();
         }
-        let nullification_v1 = create_nullification(&nullifies_v1, 1, leader_id);
+        let nullification_v1 = create_nullification(&nullifies_v1, 1, leader_id, &setup.peer_set);
         view_chain
             .route_nullification(nullification_v1, peer_set)
             .unwrap();
@@ -4070,7 +4208,7 @@ mod tests {
         for nullify in nullifies.iter() {
             view_chain.route_nullify(nullify.clone(), peer_set).unwrap();
         }
-        let nullification = create_nullification(&nullifies, 1, leader_id);
+        let nullification = create_nullification(&nullifies, 1, leader_id, &setup.peer_set);
         view_chain
             .route_nullification(nullification, peer_set)
             .unwrap();
@@ -4250,7 +4388,7 @@ mod tests {
                 .route_nullify(nullify.clone(), &setup.peer_set)
                 .unwrap();
         }
-        let nullification = create_nullification(&nullifies, 1, leader_id);
+        let nullification = create_nullification(&nullifies, 1, leader_id, &setup.peer_set);
         view_chain
             .route_nullification(nullification, &setup.peer_set)
             .unwrap();
@@ -4302,7 +4440,7 @@ mod tests {
                 .add_nullify(nullify.clone(), &setup.peer_set)
                 .unwrap();
         }
-        let nullification = create_nullification(&nullifies, 1, leader_id);
+        let nullification = create_nullification(&nullifies, 1, leader_id, &setup.peer_set);
         ctx_v1
             .add_nullification(nullification, &setup.peer_set)
             .unwrap();
@@ -4330,7 +4468,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_notarization = create_m_notarization(&votes, 1, block_hash_v1, leader_id);
+        let m_notarization =
+            create_m_notarization(&votes, 1, block_hash_v1, leader_id, &setup.peer_set);
 
         // Should succeed - M-notarization can coexist with nullification
         let result = view_chain.route_m_notarization(m_notarization, &setup.peer_set);
@@ -4403,7 +4542,7 @@ mod tests {
                 .route_nullify(nullify.clone(), &setup.peer_set)
                 .unwrap();
         }
-        let nullification = create_nullification(&nullifies, 1, leader_id);
+        let nullification = create_nullification(&nullifies, 1, leader_id, &setup.peer_set);
         view_chain
             .route_nullification(nullification, &setup.peer_set)
             .unwrap();
@@ -4452,7 +4591,7 @@ mod tests {
                 .add_nullify(nullify.clone(), &setup.peer_set)
                 .unwrap();
         }
-        let nullification = create_nullification(&nullifies, 2, leader_id);
+        let nullification = create_nullification(&nullifies, 2, leader_id, &setup.peer_set);
         ctx_v2
             .add_nullification(nullification, &setup.peer_set)
             .unwrap();
@@ -4487,7 +4626,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v3 = create_m_notarization(&votes_v3, 3, block_hash_v3, leader_id);
+        let m_not_v3 =
+            create_m_notarization(&votes_v3, 3, block_hash_v3, leader_id, &setup.peer_set);
         ctx_v3
             .add_m_notarization(m_not_v3, &setup.peer_set)
             .unwrap();
@@ -4538,7 +4678,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -4640,7 +4781,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -4674,7 +4816,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v2 = create_m_notarization(&votes_v2, 2, block_hash_v2, leader_id);
+        let m_not_v2 =
+            create_m_notarization(&votes_v2, 2, block_hash_v2, leader_id, &setup.peer_set);
         ctx_v2
             .add_m_notarization(m_not_v2, &setup.peer_set)
             .unwrap();
@@ -4703,7 +4846,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v3 = create_m_notarization(&votes_v3, 3, block_hash_v3, leader_id);
+        let m_not_v3 =
+            create_m_notarization(&votes_v3, 3, block_hash_v3, leader_id, &setup.peer_set);
         ctx_v3
             .add_m_notarization(m_not_v3, &setup.peer_set)
             .unwrap();
@@ -4750,7 +4894,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_notarization = create_m_notarization(&votes, 5, [88u8; 32], leader_id);
+        let m_notarization =
+            create_m_notarization(&votes, 5, [88u8; 32], leader_id, &setup.peer_set);
 
         let result = view_chain.route_m_notarization(m_notarization, &setup.peer_set);
 
@@ -4792,7 +4937,7 @@ mod tests {
                 )
             })
             .collect();
-        let nullification = create_nullification(&nullifies, 7, leader_id);
+        let nullification = create_nullification(&nullifies, 7, leader_id, &setup.peer_set);
 
         let result = view_chain.route_nullification(nullification, &setup.peer_set);
 
@@ -4902,7 +5047,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_notarization = create_m_notarization(&votes, 1, block_hash_v1, leader_id);
+        let m_notarization =
+            create_m_notarization(&votes, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_notarization, &setup.peer_set)
             .unwrap();
@@ -4991,7 +5137,7 @@ mod tests {
                 )
             })
             .collect();
-        let m_not = create_m_notarization(&votes, 1, [66u8; 32], leader_id);
+        let m_not = create_m_notarization(&votes, 1, [66u8; 32], leader_id, &setup.peer_set);
         view_chain
             .non_finalized_views
             .get_mut(&1)
@@ -5042,7 +5188,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -5113,7 +5260,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1.clone(), &setup.peer_set)
             .unwrap();
@@ -5154,7 +5302,7 @@ mod tests {
                 .add_nullify(nullify.clone(), &setup.peer_set)
                 .unwrap();
         }
-        let nullification_v2 = create_nullification(&nullifies_v2, 2, leader_id);
+        let nullification_v2 = create_nullification(&nullifies_v2, 2, leader_id, &setup.peer_set);
         ctx_v2
             .add_nullification(nullification_v2.clone(), &setup.peer_set)
             .unwrap();
@@ -5184,7 +5332,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v3 = create_m_notarization(&votes_v3_m, 3, block_hash_v3, leader_id);
+        let m_not_v3 =
+            create_m_notarization(&votes_v3_m, 3, block_hash_v3, leader_id, &setup.peer_set);
         ctx_v3
             .add_m_notarization(m_not_v3.clone(), &setup.peer_set)
             .unwrap();
@@ -5359,7 +5508,7 @@ mod tests {
                 &setup.peer_id_to_secret_key,
             ));
         }
-        let old_m_not = create_m_notarization(&votes, 5, [0u8; 32], older_leader);
+        let old_m_not = create_m_notarization(&votes, 5, [0u8; 32], older_leader, &setup.peer_set);
         let m_res = chain.route_m_notarization(old_m_not, &setup.peer_set);
         assert!(m_res.is_ok());
         let res = m_res.unwrap();
@@ -5524,7 +5673,7 @@ mod tests {
             );
             nullify_messages.insert(nullify);
         }
-        let nullification = create_nullification(&nullify_messages, 1, leader_v1);
+        let nullification = create_nullification(&nullify_messages, 1, leader_v1, &setup.peer_set);
 
         // Add the nullification to view 1
         if let Some(ctx) = view_chain.non_finalized_views.get_mut(&1) {
@@ -5551,7 +5700,8 @@ mod tests {
             );
             nullify_messages_v2.insert(nullify);
         }
-        let nullification_v2 = create_nullification(&nullify_messages_v2, 2, leader_v2);
+        let nullification_v2 =
+            create_nullification(&nullify_messages_v2, 2, leader_v2, &setup.peer_set);
         if let Some(ctx) = view_chain.non_finalized_views.get_mut(&2) {
             ctx.nullification = Some(nullification_v2);
         }
@@ -5595,7 +5745,7 @@ mod tests {
             );
             nullify_messages.insert(nullify);
         }
-        let nullification = create_nullification(&nullify_messages, 1, leader_id);
+        let nullification = create_nullification(&nullify_messages, 1, leader_id, &setup.peer_set);
 
         // First time: should_broadcast_nullification should be true
         let result1 = view_chain
@@ -5630,18 +5780,38 @@ mod tests {
     impl TestSetupWithReader {
         fn new(num_peers: usize) -> Self {
             let mut rng = thread_rng();
-            let mut public_keys = vec![];
             let mut peer_id_to_secret_key = HashMap::new();
+            let f = std::cmp::max(1, (num_peers - 1) / 5);
+            let dual_dkg = run_in_memory_dual_dkg(num_peers, f, &mut rng)
+                .expect("in-memory dual DKG for tests must succeed");
+            let mut public_keys = Vec::with_capacity(num_peers);
+            let mut indices = Vec::with_capacity(num_peers);
+            let mut id_to_m_share_public_key = HashMap::with_capacity(num_peers);
+            let mut id_to_l_share_public_key = HashMap::with_capacity(num_peers);
 
-            for _ in 0..num_peers {
-                let sk = BlsSecretKey::generate(&mut rng);
+            for participant in dual_dkg.m_nullify.participant_shares {
+                let mut sk_bytes = participant.secret_share.to_bytes_le();
+                sk_bytes.reverse();
+                let sk = BlsSecretKey(sk_bytes);
                 let pk = sk.public_key();
                 let peer_id = pk.to_peer_id();
                 peer_id_to_secret_key.insert(peer_id, sk);
                 public_keys.push(pk);
+                indices.push(participant.participant_index);
+                id_to_m_share_public_key.insert(peer_id, pk);
+                id_to_l_share_public_key.insert(peer_id, pk);
             }
 
-            let peer_set = PeerSet::new(public_keys);
+            let peer_set = PeerSet::with_threshold_material(
+                public_keys,
+                indices,
+                id_to_m_share_public_key,
+                id_to_l_share_public_key,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("threshold peer set");
 
             let temp_dir = TempDir::new().expect("Failed to create temp dir");
             let db_path = temp_dir.path().join("test_consensus.db");
@@ -5761,7 +5931,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -5853,7 +6024,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -5913,7 +6085,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -5984,7 +6157,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -6073,7 +6247,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -6110,7 +6285,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v2 = create_m_notarization(&votes_v2, 2, block_hash_v2, leader_id);
+        let m_not_v2 =
+            create_m_notarization(&votes_v2, 2, block_hash_v2, leader_id, &setup.peer_set);
         ctx_v2
             .add_m_notarization(m_not_v2, &setup.peer_set)
             .unwrap();
@@ -6144,7 +6320,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v3 = create_m_notarization(&votes_v3, 3, block_hash_v3, leader_id);
+        let m_not_v3 =
+            create_m_notarization(&votes_v3, 3, block_hash_v3, leader_id, &setup.peer_set);
         ctx_v3
             .add_m_notarization(m_not_v3, &setup.peer_set)
             .unwrap();
@@ -6207,7 +6384,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -6314,7 +6492,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();
@@ -6407,7 +6586,7 @@ mod tests {
             .collect();
         ctx_v1
             .add_m_notarization(
-                create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id),
+                create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set),
                 &setup.peer_set,
             )
             .unwrap();
@@ -6451,7 +6630,7 @@ mod tests {
             .collect();
         ctx_v2
             .add_m_notarization(
-                create_m_notarization(&votes_v2, 2, block_hash_v2, leader_id),
+                create_m_notarization(&votes_v2, 2, block_hash_v2, leader_id, &setup.peer_set),
                 &setup.peer_set,
             )
             .unwrap();
@@ -6511,7 +6690,8 @@ mod tests {
                 )
             })
             .collect();
-        let m_not_v1 = create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id);
+        let m_not_v1 =
+            create_m_notarization(&votes_v1, 1, block_hash_v1, leader_id, &setup.peer_set);
         ctx_v1
             .add_m_notarization(m_not_v1, &setup.peer_set)
             .unwrap();

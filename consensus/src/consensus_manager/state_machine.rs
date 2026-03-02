@@ -212,9 +212,9 @@ use rtrb::{Consumer, Producer};
 use visualizer::DashboardMetrics;
 
 use crate::{
-    consensus::ConsensusMessage,
+    consensus::{BlockProposal, ConsensusMessage},
     consensus_manager::{events::ViewProgressEvent, view_manager::ViewProgressManager},
-    crypto::aggregated::{BlsSecretKey, PeerId},
+    crypto::consensus_bls::{BlsSecretKey, PeerId, ThresholdDomain, ThresholdSignerContext},
     mempool::{FinalizedNotification, ProposalRequest, ProposalResponse},
     metrics::ConsensusMetrics,
     state::{block::Block, notarizations::Vote, transaction::Transaction},
@@ -245,6 +245,8 @@ pub struct ConsensusStateMachine<const N: usize, const F: usize, const M_SIZE: u
 
     /// Secret key for signing messages
     secret_key: BlsSecretKey,
+    /// Optional threshold signer context used for hot-path partial signatures.
+    threshold_signer: Option<ThresholdSignerContext>,
 
     /// Channel for receiving consensus messages from the network
     message_consumer: Consumer<ConsensusMessage<N, F, M_SIZE>>,
@@ -286,6 +288,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
     pub fn new(
         view_manager: ViewProgressManager<N, F, M_SIZE>,
         secret_key: BlsSecretKey,
+        threshold_signer: Option<ThresholdSignerContext>,
         message_consumer: Consumer<ConsensusMessage<N, F, M_SIZE>>,
         broadcast_producer: Producer<ConsensusMessage<N, F, M_SIZE>>,
         proposal_req_producer: Producer<ProposalRequest>,
@@ -302,6 +305,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             view_manager,
             pending_messages: BTreeMap::new(),
             secret_key,
+            threshold_signer,
             message_consumer,
             broadcast_producer,
             proposal_req_producer,
@@ -375,6 +379,32 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         );
 
         Ok(())
+    }
+
+    /// Sign a consensus payload for vote/nullify hot-path messages.
+    ///
+    /// When threshold context is available this returns a threshold partial signature with
+    /// domain separation. Otherwise it falls back to full-key BLS signing over raw payload.
+    fn sign_hot_path_payload(
+        &self,
+        domain: ThresholdDomain,
+        payload: &[u8],
+    ) -> Result<crypto::consensus_bls::ThresholdPartialSignature> {
+        if let Some(threshold_signer) = &self.threshold_signer {
+            return threshold_signer.partial_sign(domain, payload);
+        }
+        #[cfg(test)]
+        {
+            Ok(crypto::consensus_bls::ThresholdPartialSignature(
+                self.secret_key.sign(payload),
+            ))
+        }
+        #[cfg(not(test))]
+        {
+            Err(anyhow::anyhow!(
+                "threshold signer context is required for consensus hot-path signing"
+            ))
+        }
     }
 
     /// Record per-message-type counter.
@@ -775,6 +805,19 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 self.view_manager
                     .rollback_pending_diffs_in_range(start_view, current_view);
 
+                // Progress to a fresh view after local range nullification.
+                // Without this, the replica can remain stuck in a locally nullified
+                // current view waiting for events that will never fire.
+                let new_view = current_view + 1;
+                let (leader, parent_hash) = self.view_manager.progress_after_cascade(new_view)?;
+                slog::info!(
+                    self.logger,
+                    "After range nullification: progressing to new view {} with parent {:?}",
+                    new_view,
+                    parent_hash
+                );
+                self.progress_to_next_view(new_view, leader, parent_hash)?;
+
                 Ok(())
             }
             ViewProgressEvent::ShouldRequestBlock { view, block_hash } => {
@@ -863,27 +906,37 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         let leader_signature = self.secret_key.sign(&block_hash);
 
         // Update the block with the true leader signature.
-        block.leader_signature = leader_signature.clone();
+        block.leader_signature = leader_signature;
 
         // Update dashboard with block proposal info
         if let Some(ref db) = self.dashboard {
             let slot = db.slot(view);
-            let hash_lo = u64::from_le_bytes(block_hash[..8].try_into().unwrap());
-            let hash_hi = u64::from_le_bytes(block_hash[8..16].try_into().unwrap());
+            let mut lo_bytes = [0u8; 8];
+            lo_bytes.copy_from_slice(&block_hash[..8]);
+            let mut hi_bytes = [0u8; 8];
+            hi_bytes.copy_from_slice(&block_hash[8..16]);
+            let hash_lo = u64::from_le_bytes(lo_bytes);
+            let hash_hi = u64::from_le_bytes(hi_bytes);
             slot.block_hash_lo.store(hash_lo, Ordering::Relaxed);
             slot.block_hash_hi.store(hash_hi, Ordering::Relaxed);
             slot.tx_count
                 .store(block.transactions.len() as u64, Ordering::Relaxed);
         }
 
+        let leader_m_signature =
+            self.sign_hot_path_payload(ThresholdDomain::MNotarization, &block_hash)?;
+        let leader_l_signature =
+            self.sign_hot_path_payload(ThresholdDomain::LNotarization, &block_hash)?;
+        let proposal = BlockProposal::new(block.clone(), leader_m_signature, leader_l_signature);
+
         // Broadcast the block proposal to the network layer (to be received by other replicas)
-        self.broadcast_consensus_message(ConsensusMessage::BlockProposal(block.clone()))?;
+        self.broadcast_consensus_message(ConsensusMessage::BlockProposal(proposal.clone()))?;
 
         // Manually process the block proposal locally to avoid redundant vote broadcasting.
         // The leader's block proposal implicitly counts as a vote.
         let event = self
             .view_manager
-            .process_consensus_msg(ConsensusMessage::BlockProposal(block))?;
+            .process_consensus_msg(ConsensusMessage::BlockProposal(proposal))?;
 
         match event {
             ViewProgressEvent::ShouldVote { view, block_hash } => {
@@ -893,8 +946,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                     self.logger,
                     "Adding own vote for view {view} with block hash {block_hash:?}",
                 );
-                self.view_manager
-                    .add_own_vote(view, block_hash, leader_signature)?;
+                self.view_manager.add_own_vote_with_l_signature(
+                    view,
+                    block_hash,
+                    leader_m_signature,
+                    leader_l_signature,
+                )?;
             }
             ViewProgressEvent::ShouldVoteAndMNotarize {
                 view,
@@ -905,8 +962,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                     self.logger,
                     "Adding own vote and creating M-notarization for view {view} with block hash {block_hash:?}",
                 );
-                self.view_manager
-                    .add_own_vote(view, block_hash, leader_signature)?;
+                self.view_manager.add_own_vote_with_l_signature(
+                    view,
+                    block_hash,
+                    leader_m_signature,
+                    leader_l_signature,
+                )?;
                 self.create_and_broadcast_m_notarization(
                     view,
                     block_hash,
@@ -918,8 +979,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                     self.logger,
                     "Adding own vote and finalizing view {view} with block hash {block_hash:?}",
                 );
-                self.view_manager
-                    .add_own_vote(view, block_hash, leader_signature)?;
+                self.view_manager.add_own_vote_with_l_signature(
+                    view,
+                    block_hash,
+                    leader_m_signature,
+                    leader_l_signature,
+                )?;
                 self.finalize_view(view, block_hash)?;
             }
             // Fallback for other events
@@ -954,24 +1019,20 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         let leader_id = self.view_manager.leader_for_view(view)?;
 
         // Sign the vote
-        let vote_signature = self.secret_key.sign(&block_hash);
+        let vote_signature =
+            self.sign_hot_path_payload(ThresholdDomain::MNotarization, &block_hash)?;
+        let l_vote_signature =
+            self.sign_hot_path_payload(ThresholdDomain::LNotarization, &block_hash)?;
 
         // Create a new vote
-        let vote = Vote::new(
+        let vote = Vote::new_with_threshold_signatures(
             view,
             block_hash,
-            vote_signature.clone(),
+            vote_signature,
+            l_vote_signature,
             self.view_manager.replica_id(),
             leader_id,
         );
-
-        let my_pk = self.secret_key.public_key();
-        if !my_pk.verify(&block_hash, &vote_signature) {
-            slog::error!(
-                self.logger,
-                "[DEBUG] CRITICAL: Local vote signing failed verification with own PK!"
-            );
-        }
 
         // Broadcast the vote to the network layer (to be received by other replicas)
         self.broadcast_consensus_message(ConsensusMessage::Vote(vote))?;
@@ -980,8 +1041,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
         // self.view_manager.mark_voted(view)?;
 
         // Add the vote to the view context
-        self.view_manager
-            .add_own_vote(view, block_hash, vote_signature)?;
+        self.view_manager.add_own_vote_with_l_signature(
+            view,
+            block_hash,
+            vote_signature,
+            l_vote_signature,
+        )?;
 
         Ok(())
     }
@@ -1057,6 +1122,14 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
     fn nullify_view(&mut self, view: u64, force: bool) -> Result<()> {
         slog::debug!(self.logger, "Nullifying view {view} (force: {force})");
 
+        let leader_id = self.view_manager.leader_for_view(view)?;
+        let nullify_message_hash =
+            blake3::hash(&[view.to_le_bytes(), leader_id.to_le_bytes()].concat());
+        let nullify_signature = self.sign_hot_path_payload(
+            ThresholdDomain::Nullification,
+            nullify_message_hash.as_bytes(),
+        )?;
+
         // Get view context to create nullify message
         let view_ctx = self.view_manager.view_context_mut(view)?;
 
@@ -1073,7 +1146,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             // This is safe because cascade is for pending state consistency —
             // Lemma 5.3 guarantees that a nullified parent can never be L-notarized,
             // so descendant views' pending state must be cleaned up.
-            view_ctx.create_nullify_for_cascade(&self.secret_key)?
+            view_ctx.create_nullify_for_cascade_with_signature(nullify_signature)?
         } else if view_ctx.has_voted {
             // After voting, we need conflicting evidence to nullify (Byzantine).
             let num_conflicting_votes = view_ctx.num_invalid_votes;
@@ -1084,7 +1157,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 // Byzantine behavior detected:
                 // - Conflicting votes > F means equivocation (can't finalize)
                 // - Combined evidence > 2F indicates Byzantine quorum
-                view_ctx.create_nullify_for_byzantine(&self.secret_key)?
+                view_ctx.create_nullify_for_byzantine_with_signature(nullify_signature)?
             } else {
                 // Voted but no sufficient evidence — cannot nullify
                 return Ok(());
@@ -1096,10 +1169,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
             let combined_count = num_conflicting_votes + num_nullify_messages;
 
             if num_conflicting_votes > F || combined_count > 2 * F {
-                view_ctx.create_nullify_for_byzantine(&self.secret_key)?
+                view_ctx.create_nullify_for_byzantine_with_signature(nullify_signature)?
             } else {
                 // Timeout (no strong evidence of Byzantine behavior)
-                view_ctx.create_nullify_for_timeout(&self.secret_key)?
+                view_ctx.create_nullify_for_timeout_with_signature(nullify_signature)?
             }
         };
 
@@ -1304,6 +1377,7 @@ fn best_effort_notification<T>(
 pub struct ConsensusStateMachineBuilder<const N: usize, const F: usize, const M_SIZE: usize> {
     view_manager: Option<ViewProgressManager<N, F, M_SIZE>>,
     secret_key: Option<BlsSecretKey>,
+    threshold_signer: Option<ThresholdSignerContext>,
     tick_interval: Option<Duration>,
     shutdown_signal: Option<Arc<AtomicBool>>,
     metrics: Option<Arc<ConsensusMetrics>>,
@@ -1332,6 +1406,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
         Self {
             view_manager: None,
             secret_key: None,
+            threshold_signer: None,
             tick_interval: None,
             shutdown_signal: None,
             metrics: None,
@@ -1353,6 +1428,19 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
 
     pub fn with_secret_key(mut self, secret_key: BlsSecretKey) -> Self {
         self.secret_key = Some(secret_key);
+        self
+    }
+
+    pub fn with_threshold_signer(mut self, threshold_signer: ThresholdSignerContext) -> Self {
+        self.threshold_signer = Some(threshold_signer);
+        self
+    }
+
+    pub fn with_threshold_signer_opt(
+        mut self,
+        threshold_signer: Option<ThresholdSignerContext>,
+    ) -> Self {
+        self.threshold_signer = threshold_signer;
         self
     }
 
@@ -1432,6 +1520,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize>
                 .ok_or_else(|| anyhow::anyhow!("ViewProgressManager not set"))?,
             self.secret_key
                 .ok_or_else(|| anyhow::anyhow!("SecretKey not set"))?,
+            self.threshold_signer,
             self.message_consumer
                 .ok_or_else(|| anyhow::anyhow!("Message consumer not set"))?,
             self.broadcast_producer
@@ -1467,13 +1556,13 @@ mod tests {
             leader_manager::{LeaderSelectionStrategy, RoundRobinLeaderManager},
             view_manager::ViewProgressManager,
         },
-        crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+        crypto::transaction_crypto::TxSecretKey,
         metrics::ConsensusMetrics,
         state::{address::Address, peer::PeerSet, transaction::Transaction},
         storage::store::ConsensusStore,
         validation::PendingStateWriter,
     };
-    use ark_serialize::CanonicalSerialize;
+    use crypto::consensus_bls::BlsSecretKey;
     use rand::thread_rng;
     use rtrb::RingBuffer;
     use std::{
@@ -1503,7 +1592,7 @@ mod tests {
         size: usize,
     ) -> (
         PeerSet,
-        HashMap<crate::crypto::aggregated::PeerId, BlsSecretKey>,
+        HashMap<crypto::consensus_bls::PeerId, BlsSecretKey>,
     ) {
         let mut rng = thread_rng();
         let mut public_keys = vec![];
@@ -1584,7 +1673,7 @@ mod tests {
             for peer_id in &peer_set.sorted_peer_ids {
                 let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
                 let mut buf = Vec::new();
-                pk.0.serialize_compressed(&mut buf).unwrap();
+                pk.serialize_compressed(&mut buf).unwrap();
                 let peer_str = hex::encode(buf);
                 peer_strs.push(peer_str);
             }
@@ -1636,6 +1725,7 @@ mod tests {
             let state_machine = ConsensusStateMachine::new(
                 view_manager,
                 sk.clone(),
+                None,
                 msg_cons,
                 bc_prod,
                 proposal_req_prod,

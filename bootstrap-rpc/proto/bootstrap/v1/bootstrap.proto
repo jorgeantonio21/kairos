@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package bootstrap.v1;
+
+service BootstrapService {
+  rpc RegisterParticipant(RegisterParticipantRequest) returns (RegisterParticipantResponse);
+  rpc SubmitCommitments(SubmitCommitmentsRequest) returns (SubmitCommitmentsResponse);
+  rpc SubmitShares(SubmitSharesRequest) returns (SubmitSharesResponse);
+  rpc FinalizeCeremony(FinalizeCeremonyRequest) returns (FinalizeCeremonyResponse);
+  rpc FetchArtifact(FetchArtifactRequest) returns (FetchArtifactResponse);
+}
+
+message RegisterParticipantRequest {
+  string validator_set_id = 1;
+  uint64 peer_id = 2;
+  uint64 participant_index = 3;
+}
+
+message RegisterParticipantResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message Commitment {
+  uint64 dealer_index = 1;
+  string keyset = 2; // "m_nullify" | "l_notarization"
+  repeated string commitment_public_keys = 3; // hex-encoded compressed G2 points
+}
+
+message SubmitCommitmentsRequest {
+  string validator_set_id = 1;
+  repeated Commitment commitments = 2;
+}
+
+message SubmitCommitmentsResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message Share {
+  uint64 dealer_index = 1;
+  uint64 recipient_index = 2;
+  string keyset = 3; // "m_nullify" | "l_notarization"
+  string share_hex = 4; // 32-byte scalar, hex
+}
+
+message SubmitSharesRequest {
+  string validator_set_id = 1;
+  repeated Share shares = 2;
+}
+
+message SubmitSharesResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message FinalizeCeremonyRequest {
+  string validator_set_id = 1;
+}
+
+message FinalizeCeremonyResponse {
+  bool finalized = 1;
+  string message = 2;
+  string expected_m_nullify_group_public_key = 3;
+  string expected_l_notarization_group_public_key = 4;
+}
+
+message FetchArtifactRequest {
+  string validator_set_id = 1;
+  uint64 peer_id = 2;
+}
+
+message FetchArtifactResponse {
+  bool found = 1;
+  string artifact_json = 2;
+  string expected_m_nullify_group_public_key = 3;
+  string expected_l_notarization_group_public_key = 4;
+}

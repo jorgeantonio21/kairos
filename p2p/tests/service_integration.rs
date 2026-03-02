@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use commonware_runtime::{Clock, Runner};
 use consensus::consensus::ConsensusMessage;
-use consensus::crypto::aggregated::BlsSecretKey;
+use consensus::crypto::consensus_bls::BlsSecretKey;
 use consensus::state::block::Block;
 use consensus::state::transaction::Transaction;
 use p2p::config::{P2PConfig, ValidatorPeerInfo};
@@ -184,7 +184,7 @@ fn test_p2p_service_broadcast_notification() {
             false,
             1,
         );
-        let consensus_msg = ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block.clone());
+        let consensus_msg = ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block.clone().into());
 
         // Push to broadcast channel and notify
         broadcast_prod.push(consensus_msg).unwrap();
@@ -212,7 +212,7 @@ fn test_p2p_service_broadcast_notification() {
                 match p2p_msg {
                     P2PMessage::Consensus(ConsensusMessage::BlockProposal(received_block)) => {
                         assert_eq!(
-                            received_block.view(),
+                            received_block.block.view(),
                             block.view(),
                             "Received block should match sent block"
                         );
@@ -333,7 +333,7 @@ fn test_p2p_service_routes_consensus_messages() {
             false,
             1,
         );
-        let consensus_msg = ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block.clone());
+        let consensus_msg = ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block.clone().into());
         let p2p_msg: P2PMessage<N, F, M_SIZE> = P2PMessage::Consensus(consensus_msg);
         let bytes = serialize_message(&p2p_msg).unwrap();
 
@@ -349,7 +349,7 @@ fn test_p2p_service_routes_consensus_messages() {
             match consensus_cons.pop() {
                 Ok(received_msg) => match received_msg {
                     ConsensusMessage::BlockProposal(b) => {
-                        assert_eq!(b.view(), block.view());
+                        assert_eq!(b.block.view(), block.view());
                         received = true;
                         break;
                     }

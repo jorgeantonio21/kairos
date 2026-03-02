@@ -5,7 +5,7 @@
 
 use ark_serialize::CanonicalSerialize;
 use commonware_cryptography::{Signer, ed25519};
-use consensus::crypto::aggregated::{BlsPublicKey, BlsSecretKey, PeerId};
+use consensus::crypto::consensus_bls::{BlsPublicKey, BlsSecretKey, PeerId};
 
 /// Domain separation tag for deriving ed25519 from BLS.
 const ED25519_DERIVATION_DOMAIN: &[u8] = b"kairos-ed25519-from-bls-v1";

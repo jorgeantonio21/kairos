@@ -1,6 +1,6 @@
 //! P2P configuration types.
 
-use consensus::crypto::aggregated::PeerId;
+use consensus::crypto::consensus_bls::PeerId;
 use figment::Figment;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;

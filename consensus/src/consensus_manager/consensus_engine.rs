@@ -59,7 +59,7 @@
 //!         config::ConsensusConfig,
 //!     },
 //!     consensus::ConsensusMessage,
-//!     crypto::aggregated::BlsSecretKey,
+//!     crypto::consensus_bls::BlsSecretKey,
 //!     storage::store::ConsensusStore,
 //!     validation::{PendingStateWriter, ValidatedBlock},
 //! };
@@ -167,7 +167,6 @@
 //! behavior.
 
 use std::{
-    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -189,7 +188,7 @@ use crate::{
         state_machine::ConsensusStateMachineBuilder,
         view_manager::ViewProgressManager,
     },
-    crypto::aggregated::{BlsPublicKey, BlsSecretKey, PeerId},
+    crypto::consensus_bls::{BlsSecretKey, PeerId, ThresholdSignerContext},
     mempool::{FinalizedNotification, ProposalRequest, ProposalResponse},
     metrics::ConsensusMetrics,
     state::peer::PeerSet,
@@ -237,6 +236,46 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
         config: ConsensusConfig,
         replica_id: PeerId,
         secret_key: BlsSecretKey,
+        threshold_signer: Option<ThresholdSignerContext>,
+        message_consumer: Consumer<ConsensusMessage<N, F, M_SIZE>>,
+        broadcast_notify: Arc<tokio::sync::Notify>,
+        broadcast_producer: Producer<ConsensusMessage<N, F, M_SIZE>>,
+        proposal_req_producer: Producer<ProposalRequest>,
+        proposal_resp_consumer: Consumer<ProposalResponse>,
+        finalized_producer: Producer<FinalizedNotification>,
+        persistence_writer: PendingStateWriter,
+        tick_interval: Duration,
+        metrics: Arc<ConsensusMetrics>,
+        dashboard: Option<Arc<DashboardMetrics>>,
+        logger: slog::Logger,
+    ) -> Result<Self> {
+        Self::new_with_peers(
+            config,
+            replica_id,
+            secret_key,
+            threshold_signer,
+            None,
+            message_consumer,
+            broadcast_notify,
+            broadcast_producer,
+            proposal_req_producer,
+            proposal_resp_consumer,
+            finalized_producer,
+            persistence_writer,
+            tick_interval,
+            metrics,
+            dashboard,
+            logger,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_peers(
+        config: ConsensusConfig,
+        replica_id: PeerId,
+        secret_key: BlsSecretKey,
+        threshold_signer: Option<ThresholdSignerContext>,
+        peers_override: Option<PeerSet>,
         message_consumer: Consumer<ConsensusMessage<N, F, M_SIZE>>,
         broadcast_notify: Arc<tokio::sync::Notify>,
         broadcast_producer: Producer<ConsensusMessage<N, F, M_SIZE>>,
@@ -253,19 +292,18 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
         let shutdown_signal = Arc::new(AtomicBool::new(false));
 
         // Create leader manager based on config
+        let peer_set_for_topology = if let Some(peers) = peers_override.clone() {
+            peers
+        } else {
+            ViewProgressManager::<N, F, M_SIZE>::parse_config_peers(&config.peers)?
+        };
+
         let leader_manager: Box<dyn LeaderManager> = match config.leader_manager {
             LeaderSelectionStrategy::RoundRobin => {
-                // Parse peer IDs from config
-                let peer_ids = PeerSet::new(
-                    config
-                        .peers
-                        .iter()
-                        .map(|p| BlsPublicKey::from_str(p).expect("Failed to parse BlsPublicKey"))
-                        .collect(),
-                );
-                Box::new(RoundRobinLeaderManager::new(
+                Box::new(RoundRobinLeaderManager::new_with_indices(
                     config.n,
-                    peer_ids.sorted_peer_ids,
+                    peer_set_for_topology.sorted_peer_ids.clone(),
+                    peer_set_for_topology.indices.clone(),
                 ))
             }
             LeaderSelectionStrategy::Random => {
@@ -277,10 +315,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
         };
 
         // Create view progress manager
-        let view_manager = ViewProgressManager::new(
+        let view_manager = ViewProgressManager::new_with_peers(
             config,
             replica_id,
             leader_manager,
+            peers_override,
             persistence_writer,
             logger.clone(),
         )
@@ -290,6 +329,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusEngine<N, F, 
         let mut state_machine = ConsensusStateMachineBuilder::new()
             .with_view_manager(view_manager)
             .with_secret_key(secret_key)
+            .with_threshold_signer_opt(threshold_signer)
             .with_message_consumer(message_consumer)
             .with_broadcast_producer(broadcast_producer)
             .with_proposal_req_producer(proposal_req_producer)
@@ -432,11 +472,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> Drop for ConsensusEngi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::aggregated::BlsSecretKey;
     use crate::metrics::ConsensusMetrics;
     use crate::state::peer::PeerSet;
     use crate::storage::store::ConsensusStore;
-    use ark_serialize::CanonicalSerialize;
+    use crypto::consensus_bls::BlsSecretKey;
     use rand::thread_rng;
     use rtrb::RingBuffer;
     use tempfile::tempdir;
@@ -478,7 +517,7 @@ mod tests {
         for peer_id in &peer_set.sorted_peer_ids {
             let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             peer_strs.push(hex::encode(buf));
         }
         let config = create_test_config(peer_strs);
@@ -515,6 +554,7 @@ mod tests {
             config,
             replica_id,
             secret_key,
+            None,
             message_consumer,
             broadcast_notify,
             broadcast_producer,
@@ -557,7 +597,7 @@ mod tests {
         for peer_id in &peer_set.sorted_peer_ids {
             let pk = peer_set.id_to_public_key.get(peer_id).unwrap();
             let mut buf = Vec::new();
-            pk.0.serialize_compressed(&mut buf).unwrap();
+            pk.serialize_compressed(&mut buf).unwrap();
             peer_strs.push(hex::encode(buf));
         }
         let config = create_test_config(peer_strs);
@@ -590,6 +630,7 @@ mod tests {
             config,
             replica_id,
             secret_key,
+            None,
             message_consumer,
             broadcast_notify,
             broadcast_producer,

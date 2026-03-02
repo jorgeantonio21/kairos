@@ -2,13 +2,20 @@ services:
   kairos-node:
     # Image built by Nix: nix build .#dockerImage && docker load < result
     image: kairos-node:latest
+    entrypoint: [ "/bin/sh", "-c" ]
     command:
-      - run
-      - --config
-      - /etc/kairos/node.toml
+      - |
+        set -eu
+        ARTIFACT="/data/threshold/validator-0.threshold_setup.json"
+        if [ ! -f "$ARTIFACT" ]; then
+          kairos-node --log-level error generate-threshold-artifacts --output-dir /data/threshold --validator-set-id kairos-local-vs-1
+        fi
+        chmod 600 "$ARTIFACT"
+        exec kairos-node run --config /etc/kairos/node.toml
     volumes:
       - ./config/node.toml:/etc/kairos/node.toml:ro
       - ./data/node:/data
+      - ./data/threshold:/data/threshold
     ports:
       - "50051:50051"
       - "9090:9090"

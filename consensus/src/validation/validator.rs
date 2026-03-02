@@ -521,8 +521,7 @@ mod tests {
 
         let block = Block::genesis(
             0,
-            crate::crypto::aggregated::BlsSecretKey::generate(&mut rand::thread_rng())
-                .sign(b"genesis"),
+            crypto::consensus_bls::BlsSecretKey::generate(&mut rand::thread_rng()).sign(b"genesis"),
         );
 
         let result = validator.validate_block(&block);
@@ -926,7 +925,7 @@ mod tests {
     }
 
     fn create_test_block(transactions: Vec<Arc<Transaction>>) -> Block {
-        use crate::crypto::aggregated::BlsSecretKey;
+        use crypto::consensus_bls::BlsSecretKey;
         let sk = BlsSecretKey::generate(&mut rand::thread_rng());
         let sig = sk.sign(b"test block");
 

@@ -1,11 +1,11 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use blst::{
-    BLST_ERROR, blst_hash_to_g1, blst_p1, blst_p1_add_or_double, blst_p1_affine,
-    blst_p1_affine_compress, blst_p1_affine_in_g1, blst_p1_from_affine, blst_p1_mult,
-    blst_p1_to_affine, blst_p1_uncompress, blst_p2, blst_p2_add_or_double, blst_p2_affine,
-    blst_p2_affine_compress, blst_p2_affine_in_g2, blst_p2_from_affine, blst_p2_generator,
-    blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
+    blst_hash_to_g1, blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_compress,
+    blst_p1_affine_in_g1, blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p1_uncompress,
+    blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_affine_compress, blst_p2_affine_in_g2,
+    blst_p2_from_affine, blst_p2_generator, blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
     min_sig::{PublicKey, SecretKey, Signature},
+    BLST_ERROR,
 };
 
 use crate::bls::constants::{BLS_PUBLIC_KEY_BYTES, BLS_SIGNATURE_BYTES, DST, SCALAR_BITS};
@@ -271,8 +271,8 @@ pub fn combine_public_keys_with_lagrange(
 mod tests {
     use super::*;
     use crate::bls::constants::INVALID_PEER_ID;
-    use crate::threshold_math::lagrange_coefficients_for_peer_ids;
-    use rand::{SeedableRng, rngs::StdRng};
+    use crate::threshold_math::lagrange_coefficients_for_indices;
+    use rand::{rngs::StdRng, SeedableRng};
 
     #[test]
     fn secret_key_roundtrip_sign_verify() {
@@ -361,7 +361,7 @@ mod tests {
             ids.push(idx);
         }
         assert_ne!(ids[0], INVALID_PEER_ID);
-        let lambdas = lagrange_coefficients_for_peer_ids(&ids).expect("lambdas");
+        let lambdas = lagrange_coefficients_for_indices(&ids).expect("lambdas");
         let msg = b"combine-roundtrip";
         let sigs: Vec<[u8; BLS_SIGNATURE_BYTES]> = sks
             .iter()
@@ -380,5 +380,44 @@ mod tests {
         let scalar = Scalar::from_bytes_le(sk_bytes);
         let alt_pk = public_key_from_scalar(&scalar).expect("pk from scalar");
         assert_eq!(alt_pk.len(), BLS_PUBLIC_KEY_BYTES);
+    }
+
+    #[test]
+    fn combine_signatures_rejects_invalid_signature_bytes() {
+        let mut rng = StdRng::seed_from_u64(23);
+        let sk = generate_secret_key_bytes(&mut rng);
+        let _pk = public_key_from_secret_key_bytes(&sk).expect("pk");
+        let msg = b"test-msg";
+        let sig = sign_with_secret_key_bytes(&sk, msg).expect("sig");
+
+        let mut bad_sigs = vec![[0u8; BLS_SIGNATURE_BYTES]; 2];
+        bad_sigs[0] = sig;
+        let lambdas = vec![Scalar::one(), Scalar::one()];
+
+        let result = combine_signatures_with_lagrange(&bad_sigs, &lambdas);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn combine_public_keys_rejects_invalid_public_key_bytes() {
+        let mut rng = StdRng::seed_from_u64(24);
+        let sk = generate_secret_key_bytes(&mut rng);
+        let pk = public_key_from_secret_key_bytes(&sk).expect("pk");
+
+        let mut bad_pks = vec![[0u8; BLS_PUBLIC_KEY_BYTES]; 2];
+        bad_pks[0] = pk;
+        let lambdas = vec![Scalar::one(), Scalar::one()];
+
+        let result = combine_public_keys_with_lagrange(&bad_pks, &lambdas);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sign_with_scalar_roundtrip() {
+        let mut rng = StdRng::seed_from_u64(25);
+        let scalar = Scalar::random(&mut rng);
+        let msg = b"test-message-for-scalar-sign";
+        let sig = sign_with_scalar(&scalar, msg).expect("sig");
+        assert_eq!(sig.len(), BLS_SIGNATURE_BYTES);
     }
 }

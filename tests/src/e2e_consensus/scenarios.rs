@@ -18,7 +18,10 @@ use consensus::{
         config::{ConsensusConfig, GenesisAccount},
         consensus_engine::ConsensusEngine,
     },
-    crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+    crypto::{
+        consensus_bls::{BlsSecretKey, ThresholdSignerContext},
+        transaction_crypto::TxSecretKey,
+    },
     mempool::MempoolService,
     metrics::ConsensusMetrics,
     state::{address::Address, block::Block, peer::PeerSet, transaction::Transaction},
@@ -36,6 +39,8 @@ use p2p::{
 use rtrb::{Producer, RingBuffer};
 use slog::{Drain, Level, Logger, o};
 use tempfile::TempDir;
+
+use crate::threshold_support::build_threshold_test_material;
 
 /// Test configuration constants (n = 5f + 1 = 6 when f = 1)
 const N: usize = 6;
@@ -206,6 +211,17 @@ fn create_node_setup<const N: usize, const F: usize, const M_SIZE: usize>(
     consensus_config: ConsensusConfig,
     logger: Logger,
 ) -> (NodeSetup<N, F, M_SIZE>, Arc<ConsensusStore>, TempDir) {
+    create_node_setup_with_threshold(identity, p2p_config, consensus_config, None, None, logger)
+}
+
+fn create_node_setup_with_threshold<const N: usize, const F: usize, const M_SIZE: usize>(
+    identity: ValidatorIdentity,
+    p2p_config: P2PConfig,
+    consensus_config: ConsensusConfig,
+    threshold_signer: Option<ThresholdSignerContext>,
+    peers_override: Option<PeerSet>,
+    logger: Logger,
+) -> (NodeSetup<N, F, M_SIZE>, Arc<ConsensusStore>, TempDir) {
     let peer_id = identity.peer_id();
 
     // Create ring buffers for consensus messages
@@ -275,10 +291,12 @@ fn create_node_setup<const N: usize, const F: usize, const M_SIZE: usize>(
     let p2p_ready = Arc::clone(&p2p_handle.is_ready);
 
     // Create consensus engine with P2P's broadcast_notify
-    let consensus_engine = ConsensusEngine::<N, F, M_SIZE>::new(
+    let consensus_engine = ConsensusEngine::<N, F, M_SIZE>::new_with_peers(
         consensus_config,
         peer_id,
         bls_secret_key,
+        threshold_signer,
+        peers_override,
         consensus_msg_consumer,
         broadcast_notify, // Use P2P's notify!
         broadcast_producer,
@@ -382,16 +400,20 @@ async fn submit_transaction_via_grpc(
 /// ```bash
 /// cargo test --package tests --lib test_multi_node_happy_path -- --ignored --nocapture
 /// ```
-#[test]
-#[ignore] // Run with: cargo test --package tests --lib test_multi_node_happy_path -- --ignored --nocapture
-fn test_multi_node_happy_path() {
+fn run_multi_node_happy_path(threshold_mode: bool) {
     let logger = create_test_logger();
+    let mode = if threshold_mode {
+        "threshold"
+    } else {
+        "legacy"
+    };
 
     slog::info!(
         logger,
         "Starting multi-node integration test with P2P (happy path)";
         "nodes" => N,
         "byzantine_tolerance" => F,
+        "mode" => mode,
     );
 
     // Phase 1: Generate identities and create funded transactions
@@ -442,6 +464,15 @@ fn test_multi_node_happy_path() {
         "Generated identities and peer set";
         "peer_ids" => ?peer_set.sorted_peer_ids,
     );
+
+    let threshold_material = if threshold_mode {
+        Some(
+            build_threshold_test_material(&identities, N, F, "tests-e2e-consensus-threshold")
+                .expect("build threshold test material"),
+        )
+    } else {
+        None
+    };
 
     // Phase 2: Create P2P configs for each node
     slog::info!(logger, "Phase 2: Creating P2P configurations");
@@ -502,9 +533,22 @@ fn test_multi_node_happy_path() {
         .zip(p2p_configs.into_iter())
         .enumerate()
     {
+        let peer_id = identity.peer_id();
         let node_logger = logger.new(o!("node" => i, "peer_id" => identity.peer_id()));
-        let (node, storage, temp_dir) =
-            create_node_setup(identity, p2p_config, consensus_config.clone(), node_logger);
+        let threshold_signer = threshold_material
+            .as_ref()
+            .and_then(|material| material.signer_by_peer_id.get(&peer_id).cloned());
+        let peers_override = threshold_material
+            .as_ref()
+            .map(|material| material.peer_set.clone());
+        let (node, storage, temp_dir) = create_node_setup_with_threshold(
+            identity,
+            p2p_config,
+            consensus_config.clone(),
+            threshold_signer,
+            peers_override,
+            node_logger,
+        );
         nodes.push(node);
         // Keep storage and temp_dir together as a tuple
         store_with_dirs.push((storage, temp_dir));
@@ -772,6 +816,18 @@ fn test_multi_node_happy_path() {
     });
 }
 
+#[test]
+#[ignore] // Run with: cargo test --package tests --lib test_multi_node_happy_path -- --ignored --nocapture
+fn test_multi_node_happy_path() {
+    run_multi_node_happy_path(false);
+}
+
+#[test]
+#[ignore] // Run with: cargo test --package tests --lib test_multi_node_happy_path_threshold_mode -- --ignored --nocapture
+fn test_multi_node_happy_path_threshold_mode() {
+    run_multi_node_happy_path(true);
+}
+
 /// Continuous load integration test with 6 nodes.
 ///
 /// This test verifies that the consensus engine and P2P network can handle
@@ -840,6 +896,14 @@ fn test_multi_node_continuous_load() {
         "peer_ids" => ?peer_set.sorted_peer_ids,
     );
 
+    let threshold_material = build_threshold_test_material(
+        &identities,
+        N,
+        F,
+        "tests-e2e-consensus-threshold-continuous-load",
+    )
+    .expect("build threshold test material");
+
     // Phase 2: Create P2P configs for each node
     slog::info!(logger, "Phase 2: Creating P2P configurations");
 
@@ -896,9 +960,21 @@ fn test_multi_node_continuous_load() {
         .zip(p2p_configs.into_iter())
         .enumerate()
     {
-        let node_logger = logger.new(o!("node" => i, "peer_id" => identity.peer_id()));
-        let (node, storage, temp_dir) =
-            create_node_setup(identity, p2p_config, consensus_config.clone(), node_logger);
+        let peer_id = identity.peer_id();
+        let node_logger = logger.new(o!("node" => i, "peer_id" => peer_id));
+        let threshold_signer = threshold_material
+            .signer_by_peer_id
+            .get(&peer_id)
+            .cloned();
+        let peers_override = Some(threshold_material.peer_set.clone());
+        let (node, storage, temp_dir) = create_node_setup_with_threshold(
+            identity,
+            p2p_config,
+            consensus_config.clone(),
+            threshold_signer,
+            peers_override,
+            node_logger,
+        );
 
         // Verify the store has the genesis block (written during consensus engine init)
         let genesis_blocks = storage
@@ -1269,7 +1345,7 @@ fn test_multi_node_crashed_replica() {
 }
 
 use consensus::consensus::ConsensusMessage;
-use consensus::crypto::aggregated::PeerId;
+use consensus::crypto::consensus_bls::PeerId;
 
 /// Node setup for a Byzantine node (no running consensus engine, giving capabilities to test).
 struct ByzantineNodeSetup<const N: usize, const F: usize, const M_SIZE: usize> {

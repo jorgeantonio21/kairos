@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::{
-    crypto::aggregated::{BlsPublicKey, BlsSignature, PeerId},
+    crypto::consensus_bls::{BlsPublicKey, PeerId, ThresholdPartialSignature, ThresholdProof},
     state::peer::PeerSet,
 };
 
@@ -20,13 +20,19 @@ pub struct Nullify {
     /// The Peer ID of the leader for the current view
     pub leader_id: PeerId,
     /// The signature of the nullify message
-    pub signature: BlsSignature,
+    pub signature: ThresholdPartialSignature,
     /// The Peer ID of the peer that is sending the nullify message
     pub peer_id: PeerId,
 }
 
 impl Nullify {
-    pub fn new(view: u64, leader_id: PeerId, signature: BlsSignature, peer_id: PeerId) -> Self {
+    pub fn new(
+        view: u64,
+        leader_id: PeerId,
+        signature: impl Into<ThresholdPartialSignature>,
+        peer_id: PeerId,
+    ) -> Self {
+        let signature = signature.into();
         Self {
             view,
             leader_id,
@@ -42,7 +48,7 @@ impl Nullify {
     pub fn verify(&self, public_key: &BlsPublicKey) -> bool {
         let message =
             blake3::hash(&[self.view.to_le_bytes(), self.leader_id.to_le_bytes()].concat());
-        public_key.verify(message.as_bytes(), &self.signature)
+        self.signature.verify(public_key, message.as_bytes())
     }
 }
 
@@ -73,43 +79,36 @@ pub struct Nullification<const N: usize, const F: usize, const M_SIZE: usize> {
     pub leader_id: PeerId,
     /// The aggregated signature of the nullification by the peers that have nullified the view.
     /// The signature signs the blake3 hash of the view number and the leader's Peer ID.
-    pub aggregated_signature: BlsSignature,
-    /// The peer IDs of the replicas that have nullified the view
-    pub peer_ids: [PeerId; M_SIZE],
+    pub aggregated_signature: ThresholdProof,
 }
 
 impl<const N: usize, const F: usize, const M_SIZE: usize> Nullification<N, F, M_SIZE> {
     pub fn new(
         view: u64,
         leader_id: PeerId,
-        aggregated_signature: BlsSignature,
-        peer_ids: [PeerId; M_SIZE],
+        aggregated_signature: impl Into<ThresholdProof>,
     ) -> Self {
+        let aggregated_signature = aggregated_signature.into();
         Self {
             view,
             leader_id,
             aggregated_signature,
-            peer_ids,
         }
     }
 
     pub fn verify(&self, peer_set: &PeerSet) -> bool {
-        let public_keys = self
-            .peer_ids
-            .iter()
-            .filter_map(|peer_id| peer_set.get_public_key(peer_id).ok().cloned())
-            .collect::<Vec<BlsPublicKey>>();
-
-        if public_keys.len() != self.peer_ids.len() {
-            return false;
-        }
-
         let hash = blake3::hash(&[self.view.to_le_bytes(), self.leader_id.to_le_bytes()].concat());
-        BlsPublicKey::verify_threshold(
-            &public_keys,
-            &self.peer_ids,
-            hash.as_bytes(),
-            &self.aggregated_signature,
-        )
+        let message = if let Some(domain) = peer_set.nullify_domain.as_ref() {
+            let mut message = Vec::with_capacity(domain.len() + hash.as_bytes().len());
+            message.extend_from_slice(domain);
+            message.extend_from_slice(hash.as_bytes());
+            message
+        } else {
+            hash.as_bytes().to_vec()
+        };
+        match peer_set.m_group_public_key.as_ref() {
+            Some(group_public_key) => group_public_key.verify(&message, &self.aggregated_signature.0),
+            None => false,
+        }
     }
 }

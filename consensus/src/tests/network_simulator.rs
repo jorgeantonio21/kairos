@@ -30,7 +30,7 @@
 //! │  Consumer    │     │  Consumer    │     │  Consumer    │
 //! └──────────────┘     └──────────────┘     └──────────────┘
 
-use crate::{consensus::ConsensusMessage, crypto::aggregated::PeerId};
+use crate::{consensus::ConsensusMessage, crypto::consensus_bls::PeerId};
 use rtrb::{Consumer, Producer};
 use std::{
     collections::HashMap,

@@ -302,7 +302,7 @@ use crate::{
     consensus_manager::utils::{
         NotarizationData, NullificationData, create_notarization_data, create_nullification_data,
     },
-    crypto::aggregated::{BlsSecretKey, BlsSignature, PeerId},
+    crypto::consensus_bls::{BlsSecretKey, PeerId, ThresholdPartialSignature},
     state::{
         block::Block,
         notarizations::{MNotarization, Vote},
@@ -477,19 +477,39 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             });
         }
 
-        let block_signature = block.leader_signature;
         self.block_hash = Some(block_hash);
         self.block = Some(block);
         self.state_diff = Some(state_diff);
 
-        let leader_vote = Vote::new(
-            self.view_number,
-            block_hash,
-            block_signature,
-            self.leader_id,
-            self.leader_id,
-        );
-        self.votes.insert(leader_vote);
+        // In tests, legacy fixtures without threshold domains still use implicit leader-vote
+        // semantics. Threshold-enabled tests must not inject a full-key leader signature as a
+        // threshold partial.
+        #[cfg(test)]
+        if peers
+            .m_not_domain
+            .as_ref()
+            .is_some_and(std::vec::Vec::is_empty)
+            && peers
+                .l_not_domain
+                .as_ref()
+                .is_some_and(std::vec::Vec::is_empty)
+        {
+            let block_signature = self
+                .block
+                .as_ref()
+                .map(|value| value.leader_signature)
+                .ok_or_else(|| anyhow::anyhow!("block unexpectedly missing in view context"))?;
+            let leader_partial = ThresholdPartialSignature(block_signature);
+            let leader_vote = Vote::new_with_threshold_signatures(
+                self.view_number,
+                block_hash,
+                leader_partial,
+                leader_partial,
+                self.leader_id,
+                self.leader_id,
+            );
+            self.votes.insert(leader_vote);
+        }
 
         if !self.non_verified_votes.is_empty() {
             let mut num_matching_votes = 0;
@@ -590,10 +610,27 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             ));
         }
 
-        let peer_public_key = peers.get_public_key(&vote.peer_id)?;
-        if !vote.verify(peer_public_key) {
+        let m_domain = peers
+            .m_not_domain
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing M-notarization domain configuration in peer set"))?;
+        let l_domain = peers
+            .l_not_domain
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing L-notarization domain configuration in peer set"))?;
+        let mut m_message = Vec::with_capacity(m_domain.len() + vote.block_hash.len());
+        m_message.extend_from_slice(m_domain);
+        m_message.extend_from_slice(&vote.block_hash);
+        let mut l_message = Vec::with_capacity(l_domain.len() + vote.block_hash.len());
+        l_message.extend_from_slice(l_domain);
+        l_message.extend_from_slice(&vote.block_hash);
+        let m_share_key = peers.get_m_share_public_key(&vote.peer_id)?;
+        let l_share_key = peers.get_l_share_public_key(&vote.peer_id)?;
+        if !vote.verify_m_signature(m_share_key, &m_message)
+            || !vote.verify_l_signature(l_share_key, &l_message)
+        {
             return Err(anyhow::anyhow!(
-                "Vote signature is not valid for peer {}, view number {}",
+                "Vote threshold signatures are not valid for peer {}, view number {}",
                 vote.peer_id,
                 vote.view
             ));
@@ -621,7 +658,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             });
         }
 
-        let block_hash = self.block_hash.unwrap();
+        let block_hash = self.block_hash.ok_or_else(|| {
+            anyhow!(
+                "Missing block hash in view {} while processing verified vote",
+                self.view_number
+            )
+        })?;
 
         if vote.block_hash != block_hash {
             self.num_invalid_votes += 1;
@@ -643,14 +685,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
 
         if is_enough_to_m_notarize {
             let NotarizationData {
-                peer_ids,
                 aggregated_signature,
-            } = create_notarization_data::<M_SIZE>(&self.votes)?;
+                ..
+            } = create_notarization_data::<M_SIZE>(&self.votes, peers)?;
             self.m_notarization = Some(MNotarization::new(
                 self.view_number,
                 block_hash,
                 aggregated_signature,
-                peer_ids,
                 self.leader_id,
             ));
         }
@@ -668,8 +709,21 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
     pub fn add_own_vote(
         &mut self,
         block_hash: [u8; blake3::OUT_LEN],
-        signature: BlsSignature,
+        signature: impl Into<ThresholdPartialSignature>,
     ) -> Result<()> {
+        let signature = signature.into();
+        self.add_own_vote_with_l_signature(block_hash, signature, signature)
+    }
+
+    /// Adds this replica's own vote using explicit M and L threshold partial signatures.
+    pub fn add_own_vote_with_l_signature(
+        &mut self,
+        block_hash: [u8; blake3::OUT_LEN],
+        m_signature: impl Into<ThresholdPartialSignature>,
+        l_signature: impl Into<ThresholdPartialSignature>,
+    ) -> Result<()> {
+        let m_signature = m_signature.into();
+        let l_signature = l_signature.into();
         if self.has_voted {
             return Err(anyhow::anyhow!("Replica has already voted"));
         }
@@ -687,10 +741,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
         }
 
         self.has_voted = true;
-        self.votes.insert(Vote::new(
+        self.votes.insert(Vote::new_with_threshold_signatures(
             self.view_number,
             block_hash,
-            signature,
+            m_signature,
+            l_signature,
             self.replica_id,
             self.leader_id,
         ));
@@ -724,8 +779,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
     pub fn add_leader_vote_for_block_proposal(
         &mut self,
         block: Block,
-        signature: BlsSignature,
+        signature: impl Into<ThresholdPartialSignature>,
     ) -> Result<()> {
+        let signature = signature.into();
         if block.view() != self.view_number {
             return Err(anyhow::anyhow!(
                 "Leader vote for block proposal for view {} is not the current view {}",
@@ -750,9 +806,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             ));
         }
 
-        self.votes.insert(Vote::new(
+        self.votes.insert(Vote::new_with_threshold_signatures(
             self.view_number,
             block.get_hash(),
+            signature,
             signature,
             self.leader_id,
             self.leader_id,
@@ -802,10 +859,19 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             ));
         }
 
-        let peer_public_key = peers.get_public_key(&nullify.peer_id)?;
-        if !nullify.verify(peer_public_key) {
+        let nullify_domain = peers
+            .nullify_domain
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing nullification domain configuration in peer set"))?;
+        let hash =
+            blake3::hash(&[nullify.view.to_le_bytes(), nullify.leader_id.to_le_bytes()].concat());
+        let mut message = Vec::with_capacity(nullify_domain.len() + hash.as_bytes().len());
+        message.extend_from_slice(nullify_domain);
+        message.extend_from_slice(hash.as_bytes());
+        let m_share_key = peers.get_m_share_public_key(&nullify.peer_id)?;
+        if !nullify.signature.verify(m_share_key, &message) {
             return Err(anyhow::anyhow!(
-                "Nullify signature is not valid for peer {}",
+                "Nullify threshold signature is not valid for peer {}",
                 nullify.peer_id
             ));
         }
@@ -815,18 +881,16 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
 
         if is_enough_for_nullification {
             let NullificationData {
-                peer_ids,
                 aggregated_signature,
-            } = create_nullification_data::<M_SIZE>(&self.nullify_messages)?;
-            if self.block.is_some() {
-                self.block.as_mut().unwrap().is_finalized = true;
+            } = create_nullification_data::<M_SIZE>(&self.nullify_messages, peers)?;
+            if let Some(block) = self.block.as_mut() {
+                block.is_finalized = true;
             }
 
             self.nullification = Some(Nullification::new(
                 self.view_number,
                 self.leader_id,
                 aggregated_signature,
-                peer_ids,
             ));
 
             // Set has_nullified flag when nullification is created
@@ -921,7 +985,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             });
         }
 
-        let block_hash = self.block_hash.unwrap();
+        let block_hash = self.block_hash.ok_or_else(|| {
+            anyhow!(
+                "Missing block hash in view {} while processing M-notarization",
+                self.view_number
+            )
+        })?;
         if m_notarization.block_hash != block_hash {
             // Byzantine behavior: M-notarization for a different block than what we have
             // This could mean either:
@@ -937,9 +1006,7 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             });
         }
 
-        if self.m_notarization.is_some() {
-            let existing_m_not = self.m_notarization.as_ref().unwrap();
-
+        if let Some(existing_m_not) = self.m_notarization.as_ref() {
             // Check if this is a duplicate (same block hash) or a conflict (different block hash)
             if existing_m_not.block_hash == m_notarization.block_hash {
                 // Duplicate M-notarization for the same block - safely ignore
@@ -1011,8 +1078,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             ));
         }
 
-        if self.block.is_some() {
-            self.block.as_mut().unwrap().is_finalized = true;
+        if let Some(block) = self.block.as_mut() {
+            block.is_finalized = true;
         }
 
         if self.nullification.is_some() {
@@ -1060,6 +1127,22 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
         self.create_nullify_message(secret_key)
     }
 
+    pub fn create_nullify_for_timeout_with_signature(
+        &mut self,
+        signature: impl Into<ThresholdPartialSignature>,
+    ) -> Result<Nullify> {
+        let signature = signature.into();
+        if self.has_nullified {
+            return Err(anyhow::anyhow!("Already nullified in this view"));
+        }
+        if self.has_voted {
+            return Err(anyhow::anyhow!(
+                "Cannot nullify for timeout after voting - use create_nullify_for_byzantine if conflicting evidence detected"
+            ));
+        }
+        self.create_nullify_message_from_signature(signature)
+    }
+
     /// Creates a nullify message for Byzantine/conflicting evidence.
     /// This can be called BEFORE or AFTER voting when >2F conflicting messages are detected
     /// (invalid votes or other nullify messages).
@@ -1070,6 +1153,17 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
         }
 
         self.create_nullify_message(secret_key)
+    }
+
+    pub fn create_nullify_for_byzantine_with_signature(
+        &mut self,
+        signature: impl Into<ThresholdPartialSignature>,
+    ) -> Result<Nullify> {
+        let signature = signature.into();
+        if self.has_nullified {
+            return Err(anyhow::anyhow!("Already nullified in this view"));
+        }
+        self.create_nullify_message_from_signature(signature)
     }
 
     /// Creates a nullify message for cascading nullification.
@@ -1094,12 +1188,30 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
         self.create_nullify_message(secret_key)
     }
 
+    pub fn create_nullify_for_cascade_with_signature(
+        &mut self,
+        signature: impl Into<ThresholdPartialSignature>,
+    ) -> Result<Nullify> {
+        let signature = signature.into();
+        if self.has_nullified {
+            return Err(anyhow::anyhow!("Already nullified in this view"));
+        }
+        self.create_nullify_message_from_signature(signature)
+    }
+
     /// Internal helper to create the actual nullify message
     fn create_nullify_message(&mut self, secret_key: &BlsSecretKey) -> Result<Nullify> {
         let message =
             blake3::hash(&[self.view_number.to_le_bytes(), self.leader_id.to_le_bytes()].concat());
-        let signature = secret_key.sign(message.as_bytes());
+        let signature = ThresholdPartialSignature(secret_key.sign(message.as_bytes()));
+        self.create_nullify_message_from_signature(signature)
+    }
 
+    fn create_nullify_message_from_signature(
+        &mut self,
+        signature: impl Into<ThresholdPartialSignature>,
+    ) -> Result<Nullify> {
+        let signature = signature.into();
         self.has_nullified = true;
         Ok(Nullify::new(
             self.view_number,
@@ -1221,8 +1333,15 @@ mod tests {
 
     use super::*;
     use crate::{
-        crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+        consensus_manager::utils::{create_notarization_data, create_nullification_data},
+        crypto::transaction_crypto::TxSecretKey,
         state::{address::Address, block::Block, transaction::Transaction},
+    };
+    use crypto::{
+        bls::ops::{public_key_from_scalar, sign_with_scalar},
+        consensus_bls::{BlsPublicKey, BlsSecretKey, BlsSignature},
+        dkg::run_in_memory_dual_dkg,
+        scalar::Scalar,
     };
     use rand::thread_rng;
 
@@ -1281,12 +1400,14 @@ mod tests {
     struct TestPeerSetup {
         peer_set: PeerSet,
         peer_id_to_secret_key: HashMap<PeerId, BlsSecretKey>,
+        peer_id_to_m_secret_share: HashMap<PeerId, Scalar>,
+        peer_id_to_l_secret_share: HashMap<PeerId, Scalar>,
     }
 
     // Helper function to create a test peer set with secret keys
     fn create_test_peer_setup(size: usize) -> TestPeerSetup {
         let mut rng = thread_rng();
-        let mut public_keys = vec![];
+        let mut public_keys = Vec::with_capacity(size);
         let mut peer_id_to_secret_key = HashMap::new();
 
         for _ in 0..size {
@@ -1297,9 +1418,64 @@ mod tests {
             public_keys.push(pk);
         }
 
+        let mut sorted_peer_ids = peer_id_to_secret_key.keys().copied().collect::<Vec<_>>();
+        sorted_peer_ids.sort_unstable();
+        public_keys = sorted_peer_ids
+            .iter()
+            .map(|peer_id| {
+                peer_id_to_secret_key
+                    .get(peer_id)
+                    .expect("peer must exist")
+                    .public_key()
+            })
+            .collect();
+        let indices = (1..=size as u64).collect::<Vec<_>>();
+
+        // Test setup uses the same threshold parameters as production logic:
+        // M/nullification threshold = 2f + 1, L threshold = n - f.
+        let f = std::cmp::max(1, (size - 1) / 5);
+        let dual_dkg = run_in_memory_dual_dkg(size, f, &mut rng).expect("in-memory dual DKG");
+
+        let mut id_to_m_share_public_key = HashMap::with_capacity(size);
+        let mut id_to_l_share_public_key = HashMap::with_capacity(size);
+        let mut peer_id_to_m_secret_share = HashMap::with_capacity(size);
+        let mut peer_id_to_l_secret_share = HashMap::with_capacity(size);
+
+        for (position, peer_id) in sorted_peer_ids.iter().copied().enumerate() {
+            let m_share = dual_dkg.m_nullify.participant_shares[position].secret_share.clone();
+            let l_share = dual_dkg.l_notarization.participant_shares[position]
+                .secret_share
+                .clone();
+
+            let m_pk = BlsPublicKey(
+                public_key_from_scalar(&m_share).expect("M-share public key derivation must succeed"),
+            );
+            let l_pk = BlsPublicKey(
+                public_key_from_scalar(&l_share).expect("L-share public key derivation must succeed"),
+            );
+
+            id_to_m_share_public_key.insert(peer_id, m_pk);
+            id_to_l_share_public_key.insert(peer_id, l_pk);
+            peer_id_to_m_secret_share.insert(peer_id, m_share);
+            peer_id_to_l_secret_share.insert(peer_id, l_share);
+        }
+
+        let peer_set = PeerSet::with_threshold_material(
+            public_keys,
+            indices,
+            id_to_m_share_public_key,
+            id_to_l_share_public_key,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("peer set threshold material must be valid");
+
         TestPeerSetup {
-            peer_set: PeerSet::new(public_keys),
+            peer_set,
             peer_id_to_secret_key,
+            peer_id_to_m_secret_share,
+            peer_id_to_l_secret_share,
         }
     }
 
@@ -1312,10 +1488,43 @@ mod tests {
         setup: &TestPeerSetup,
     ) -> Vote {
         let peer_id = setup.peer_set.sorted_peer_ids[peer_index];
-        let secret_key = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
-        let signature = secret_key.sign(&block_hash);
+        let m_share = setup.peer_id_to_m_secret_share.get(&peer_id).unwrap();
+        let l_share = setup.peer_id_to_l_secret_share.get(&peer_id).unwrap();
 
-        Vote::new(view, block_hash, signature, peer_id, leader_id)
+        let m_domain = setup
+            .peer_set
+            .m_not_domain
+            .as_ref()
+            .expect("M-not domain must be configured");
+        let l_domain = setup
+            .peer_set
+            .l_not_domain
+            .as_ref()
+            .expect("L-not domain must be configured");
+
+        let mut m_message = Vec::with_capacity(m_domain.len() + block_hash.len());
+        m_message.extend_from_slice(m_domain);
+        m_message.extend_from_slice(&block_hash);
+
+        let mut l_message = Vec::with_capacity(l_domain.len() + block_hash.len());
+        l_message.extend_from_slice(l_domain);
+        l_message.extend_from_slice(&block_hash);
+
+        let m_signature = ThresholdPartialSignature(BlsSignature(
+            sign_with_scalar(m_share, &m_message).expect("M partial signature must succeed"),
+        ));
+        let l_signature = ThresholdPartialSignature(BlsSignature(
+            sign_with_scalar(l_share, &l_message).expect("L partial signature must succeed"),
+        ));
+
+        Vote::new_with_threshold_signatures(
+            view,
+            block_hash,
+            m_signature,
+            l_signature,
+            peer_id,
+            leader_id,
+        )
     }
 
     // Helper function to create a signed nullify message from a peer
@@ -1326,11 +1535,21 @@ mod tests {
         setup: &TestPeerSetup,
     ) -> Nullify {
         let peer_id = setup.peer_set.sorted_peer_ids[peer_index];
-        let secret_key = setup.peer_id_to_secret_key.get(&peer_id).unwrap();
+        let m_share = setup.peer_id_to_m_secret_share.get(&peer_id).unwrap();
 
-        // Create the message that needs to be signed (same as in Nullify::verify)
+        let nullify_domain = setup
+            .peer_set
+            .nullify_domain
+            .as_ref()
+            .expect("nullify domain must be configured");
         let message = blake3::hash(&[view.to_le_bytes(), leader_id.to_le_bytes()].concat());
-        let signature = secret_key.sign(message.as_bytes());
+        let mut signed_message = Vec::with_capacity(nullify_domain.len() + message.as_bytes().len());
+        signed_message.extend_from_slice(nullify_domain);
+        signed_message.extend_from_slice(message.as_bytes());
+
+        let signature = ThresholdPartialSignature(BlsSignature(
+            sign_with_scalar(m_share, &signed_message).expect("nullify partial signature must succeed"),
+        ));
 
         Nullify::new(view, leader_id, signature, peer_id)
     }
@@ -1341,13 +1560,14 @@ mod tests {
         view: u64,
         block_hash: [u8; blake3::OUT_LEN],
         leader_id: PeerId,
+        peer_set: &PeerSet,
     ) -> MNotarization<N, F, M_SIZE> {
         let NotarizationData {
-            peer_ids,
             aggregated_signature,
-        } = create_notarization_data::<M_SIZE>(votes).unwrap();
+            ..
+        } = create_notarization_data::<M_SIZE>(votes, peer_set).unwrap();
 
-        MNotarization::new(view, block_hash, aggregated_signature, peer_ids, leader_id)
+        MNotarization::new(view, block_hash, aggregated_signature, leader_id)
     }
 
     // Helper function to create a test nullification from nullify messages
@@ -1355,13 +1575,13 @@ mod tests {
         nullify_messages: &HashSet<Nullify>,
         view: u64,
         leader_id: PeerId,
+        peer_set: &PeerSet,
     ) -> Nullification<N, F, M_SIZE> {
         let NullificationData {
-            peer_ids,
             aggregated_signature,
-        } = create_nullification_data::<M_SIZE>(nullify_messages).unwrap();
+        } = create_nullification_data::<M_SIZE>(nullify_messages, peer_set).unwrap();
 
-        Nullification::new(view, leader_id, aggregated_signature, peer_ids)
+        Nullification::new(view, leader_id, aggregated_signature)
     }
 
     // Helper function to create a test view context
@@ -1859,7 +2079,7 @@ mod tests {
             m_votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&m_votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&m_votes, 10, block_hash, leader_id, peers);
         context.m_notarization = Some(m_notarization);
 
         // Also add additional non-verified votes (different from M-notarization votes)
@@ -2105,7 +2325,15 @@ mod tests {
         let block_hash = [21u8; blake3::OUT_LEN];
         let secret_key = BlsSecretKey::generate(&mut thread_rng());
         let signature = secret_key.sign(&block_hash);
-        let invalid_vote = Vote::new(10, block_hash, signature, invalid_peer_id, leader_id);
+        let partial = ThresholdPartialSignature(signature);
+        let invalid_vote = Vote::new_with_threshold_signatures(
+            10,
+            block_hash,
+            partial,
+            partial,
+            invalid_peer_id,
+            leader_id,
+        );
 
         let result = context.add_vote(invalid_vote, peers);
         assert!(result.is_err());
@@ -2181,7 +2409,15 @@ mod tests {
         let peer_id = peers.sorted_peer_ids[1];
         let wrong_secret_key = BlsSecretKey::generate(&mut thread_rng());
         let invalid_signature = wrong_secret_key.sign(&block_hash);
-        let invalid_vote = Vote::new(10, block_hash, invalid_signature, peer_id, leader_id);
+        let invalid_partial = ThresholdPartialSignature(invalid_signature);
+        let invalid_vote = Vote::new_with_threshold_signatures(
+            10,
+            block_hash,
+            invalid_partial,
+            invalid_partial,
+            peer_id,
+            leader_id,
+        );
 
         let result = context.add_vote(invalid_vote, peers);
         assert!(result.is_err());
@@ -2189,7 +2425,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("signature is not valid")
+                .contains("threshold signatures are not valid")
         );
     }
 
@@ -2246,7 +2482,6 @@ mod tests {
         assert_eq!(m_not.view, 10);
         assert_eq!(m_not.block_hash, block_hash);
         assert_eq!(m_not.leader_id, leader_id);
-        assert_eq!(m_not.peer_ids.len(), 3);
 
         // Verify M-notarization is valid
         assert!(m_not.verify(peers));
@@ -2549,7 +2784,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         let result = context.add_m_notarization(m_notarization, peers);
         assert!(result.is_ok());
@@ -2588,7 +2823,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         let result = context.add_m_notarization(m_notarization, peers);
         assert!(result.is_ok());
@@ -2623,7 +2858,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         let result = context.add_m_notarization(m_notarization, peers);
         assert!(result.is_ok());
@@ -2658,7 +2893,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         let result = context.add_m_notarization(m_notarization, peers);
         assert!(result.is_ok());
@@ -2686,7 +2921,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         let result = context.add_m_notarization(m_notarization, peers);
         assert!(result.is_ok());
@@ -2723,7 +2958,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         // Add first time
         assert!(
@@ -2761,7 +2996,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 15, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 15, block_hash, leader_id, peers);
 
         let result = context.add_m_notarization(m_notarization, peers);
         assert!(result.is_err());
@@ -2800,7 +3035,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, wrong_leader);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, wrong_leader, peers);
 
         let result = context.add_m_notarization(m_notarization, peers);
         assert!(result.is_err());
@@ -2826,14 +3061,13 @@ mod tests {
         context.block_hash = Some(block_hash);
 
         // Create M-notarization with invalid signature
-        let peer_ids: [PeerId; 3] = [
-            peers.sorted_peer_ids[0],
-            peers.sorted_peer_ids[1],
-            peers.sorted_peer_ids[2],
-        ];
         let wrong_signature = BlsSecretKey::generate(&mut thread_rng()).sign(&[99u8; 32]);
-        let invalid_m_notarization =
-            MNotarization::new(10, block_hash, wrong_signature, peer_ids, leader_id);
+        let invalid_m_notarization = MNotarization::new(
+            10,
+            block_hash,
+            wrong_signature,
+            leader_id,
+        );
 
         let result = context.add_m_notarization(invalid_m_notarization, peers);
         assert!(result.is_err());
@@ -2864,7 +3098,8 @@ mod tests {
             let vote = create_test_vote(i, 10, block_hash1, leader_id, &setup);
             votes1.insert(vote);
         }
-        let m_not1 = create_test_m_notarization::<6, 1, 3>(&votes1, 10, block_hash1, leader_id);
+        let m_not1 =
+            create_test_m_notarization::<6, 1, 3>(&votes1, 10, block_hash1, leader_id, peers);
 
         let result1 = context.add_m_notarization(m_not1, peers);
         assert!(result1.is_ok());
@@ -2876,7 +3111,8 @@ mod tests {
             let vote = create_test_vote(i, 10, block_hash2, leader_id, &setup);
             votes2.insert(vote);
         }
-        let m_not2 = create_test_m_notarization::<6, 1, 3>(&votes2, 10, block_hash2, leader_id);
+        let m_not2 =
+            create_test_m_notarization::<6, 1, 3>(&votes2, 10, block_hash2, leader_id, peers);
 
         let result2 = context.add_m_notarization(m_not2, peers);
         assert!(result2.is_ok());
@@ -2909,7 +3145,8 @@ mod tests {
             let vote = create_test_vote(i, 10, block_hash1, leader_id, &setup);
             votes1.insert(vote);
         }
-        let m_not1 = create_test_m_notarization::<6, 1, 3>(&votes1, 10, block_hash1, leader_id);
+        let m_not1 =
+            create_test_m_notarization::<6, 1, 3>(&votes1, 10, block_hash1, leader_id, peers);
 
         let result1 = context.add_m_notarization(m_not1, peers);
         assert!(result1.is_ok());
@@ -2928,7 +3165,8 @@ mod tests {
             let vote = create_test_vote(i, 10, block_hash2, leader_id, &setup);
             votes2.insert(vote);
         }
-        let m_not2 = create_test_m_notarization::<6, 1, 3>(&votes2, 10, block_hash2, leader_id);
+        let m_not2 =
+            create_test_m_notarization::<6, 1, 3>(&votes2, 10, block_hash2, leader_id, peers);
 
         let result2 = context.add_m_notarization(m_not2, peers);
         assert!(result2.is_ok());
@@ -2962,7 +3200,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         // Step 3: Receive M-notarization BEFORE block (simulate async network)
         // Don't set block_hash yet to simulate receiving M-notarization first
@@ -3016,7 +3254,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, initial_block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, initial_block_hash, leader_id, peers);
 
         let result1 = context.add_m_notarization(m_notarization, peers);
         assert!(result1.is_ok());
@@ -3077,7 +3315,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         let result = context.add_m_notarization(m_notarization, peers);
         assert!(result.is_ok());
@@ -3110,7 +3348,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         // Without block
         let result1 = context.add_m_notarization(m_notarization.clone(), peers);
@@ -3188,7 +3426,8 @@ mod tests {
             let nullify = create_test_nullify(i, 10, leader_id, &setup);
             nullify_messages.insert(nullify);
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id, peers);
 
         let result = context.add_nullification(nullification, peers);
         assert!(result.is_ok());
@@ -3214,7 +3453,8 @@ mod tests {
             let nullify = create_test_nullify(i, 10, leader_id, &setup);
             nullify_messages.insert(nullify);
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id, peers);
 
         // Add first time
         let result1 = context.add_nullification(nullification.clone(), peers);
@@ -3430,7 +3670,8 @@ mod tests {
             let nullify = create_test_nullify(i, 11, leader_id, &setup); // Wrong view
             nullify_messages.insert(nullify);
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 11, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 11, leader_id, peers);
 
         let result = context.add_nullification(nullification, peers);
         assert!(result.is_err());
@@ -3459,7 +3700,7 @@ mod tests {
             nullify_messages.insert(nullify);
         }
         let nullification =
-            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, wrong_leader);
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, wrong_leader, peers);
 
         let result = context.add_nullification(nullification, peers);
         assert!(result.is_err());
@@ -3482,14 +3723,9 @@ mod tests {
             create_test_view_context_with_params::<6, 1, 3>(10, leader_id, replica_id, parent_hash);
 
         // Create nullification with invalid signature
-        let peer_ids = [
-            peers.sorted_peer_ids[1],
-            peers.sorted_peer_ids[2],
-            peers.sorted_peer_ids[3],
-        ];
         let sk = BlsSecretKey::generate(&mut thread_rng());
         let signature = sk.sign(&[10u8; 32]);
-        let nullification = Nullification::new(10, leader_id, signature, peer_ids);
+        let nullification = Nullification::new(10, leader_id, signature);
 
         let result = context.add_nullification(nullification, peers);
         assert!(result.is_err());
@@ -3520,7 +3756,8 @@ mod tests {
             let nullify = create_test_nullify(i, 10, leader_id, &setup);
             nullify_messages.insert(nullify);
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id, peers);
 
         let result = context.add_nullification(nullification, peers);
         assert!(result.is_ok());
@@ -3548,7 +3785,8 @@ mod tests {
             let nullify = create_test_nullify(i, 10, leader_id, &setup);
             nullify_messages.insert(nullify);
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id, peers);
 
         let result = context.add_nullification(nullification, peers);
         assert!(result.is_ok());
@@ -3581,7 +3819,8 @@ mod tests {
             let nullify = create_test_nullify(i, 10, leader_id, &setup);
             nullify_messages.insert(nullify);
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id, peers);
 
         let result = context.add_nullification(nullification, peers);
         assert!(result.is_ok());
@@ -4005,7 +4244,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         // Add M-notarization first (no block yet)
         let result1 = context
@@ -4178,7 +4417,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
         context.add_m_notarization(m_notarization, peers).unwrap();
         assert!(context.m_notarization.is_some());
 
@@ -4229,7 +4468,7 @@ mod tests {
             valid_votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&valid_votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&valid_votes, 10, block_hash, leader_id, peers);
         let result = context.add_m_notarization(m_notarization, peers).unwrap();
 
         assert!(result.should_notarize);
@@ -4341,7 +4580,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         // First M-notarization should have should_forward = true
         let result = context.add_m_notarization(m_notarization, peers);
@@ -4371,7 +4610,7 @@ mod tests {
             votes.insert(vote);
         }
         let m_notarization =
-            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id);
+            create_test_m_notarization::<6, 1, 3>(&votes, 10, block_hash, leader_id, peers);
 
         // Add first time
         context
@@ -4400,7 +4639,8 @@ mod tests {
             let nullify = create_test_nullify(i, 10, leader_id, &setup);
             nullify_messages.insert(nullify);
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id, peers);
 
         // First nullification should have should_broadcast_nullification = true
         let result = context.add_nullification(nullification, peers);
@@ -4424,7 +4664,8 @@ mod tests {
             let nullify = create_test_nullify(i, 10, leader_id, &setup);
             nullify_messages.insert(nullify);
         }
-        let nullification = create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id);
+        let nullification =
+            create_test_nullification::<6, 1, 3>(&nullify_messages, 10, leader_id, peers);
 
         // Add first time
         context
@@ -4654,8 +4895,13 @@ mod tests {
             votes.insert(vote);
         }
 
-        let m_notarization =
-            create_test_m_notarization(&votes, 1, block_hash, setup.peer_set.sorted_peer_ids[0]);
+        let m_notarization = create_test_m_notarization(
+            &votes,
+            1,
+            block_hash,
+            setup.peer_set.sorted_peer_ids[0],
+            &setup.peer_set,
+        );
 
         // Pre-condition: Block hash is unknown
         assert!(ctx.block_hash.is_none());
@@ -4697,8 +4943,13 @@ mod tests {
                 &setup,
             ));
         }
-        let m_notarization =
-            create_test_m_notarization(&votes, 1, block_hash, setup.peer_set.sorted_peer_ids[0]);
+        let m_notarization = create_test_m_notarization(
+            &votes,
+            1,
+            block_hash,
+            setup.peer_set.sorted_peer_ids[0],
+            &setup.peer_set,
+        );
 
         // Add M-notarization
         ctx.add_m_notarization(m_notarization, &setup.peer_set)
@@ -4808,8 +5059,9 @@ mod tests {
             let peer_id = peer_set.sorted_peer_ids[i];
             let peer_sk = peer_id_to_secret_key.get(&peer_id).unwrap();
             let signature = peer_sk.sign(&block_hash);
-            let vote = crate::state::notarizations::Vote::new(
-                1, block_hash, signature, peer_id, leader_id,
+            let partial = ThresholdPartialSignature(signature);
+            let vote = crate::state::notarizations::Vote::new_with_threshold_signatures(
+                1, block_hash, partial, partial, peer_id, leader_id,
             );
             ctx.add_vote(vote, &peer_set).unwrap();
         }

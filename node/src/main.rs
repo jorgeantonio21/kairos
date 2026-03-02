@@ -29,7 +29,7 @@ use slog::{Drain, Logger, o};
 use ark_serialize::CanonicalSerialize;
 use commonware_runtime::Runner;
 use commonware_runtime::tokio::Runner as TokioRunner;
-use consensus::crypto::aggregated::BlsSecretKey;
+use consensus::crypto::consensus_bls::BlsSecretKey;
 use consensus::metrics::ConsensusMetrics;
 use metrics_exporter_prometheus::PrometheusHandle;
 use node::ValidatorNode;
@@ -360,8 +360,23 @@ total_validators = {n}
 f = {f}
 
 [identity]
+
+[threshold_setup]
+mode = "disabled"
+# artifact_path = "/path/to/threshold_setup.json"
+# validator_set_id = "vs-2026-01"
+# expected_m_nullify_group_public_key = "<hex>"
+# expected_l_notarization_group_public_key = "<hex>"
+#
+# [threshold_setup.bootstrap]
+# endpoint = "http://127.0.0.1:7001"
+# participant_index = {node_idx_plus_one}
+# finalize_if_last = false
+# max_attempts = 60
+# backoff_ms = 1000
 "#,
         node_idx = node_idx,
+        node_idx_plus_one = node_idx + 1,
         seed = LOCAL_NETWORK_SEED,
         n = N,
         f = F,

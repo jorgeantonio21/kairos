@@ -467,6 +467,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootstrap-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crypto",
+ "hex",
+ "prost",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1060,6 +1078,9 @@ dependencies = [
  "hex",
  "rand 0.8.5",
  "rkyv",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -2331,10 +2352,12 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "ark-serialize",
+ "bootstrap-rpc",
  "clap",
  "commonware-runtime",
  "consensus",
  "crossbeam",
+ "crypto",
  "ed25519-dalek",
  "figment",
  "grpc-client",
@@ -2344,12 +2367,14 @@ dependencies = [
  "rand 0.8.5",
  "rtrb",
  "serde",
+ "serde_json",
  "slog",
  "slog-async",
  "slog-json",
  "slog-term",
  "tempfile",
  "tokio",
+ "tonic",
  "visualizer",
 ]
 

@@ -236,4 +236,53 @@ mod tests {
         let back = sum.sub(&b);
         assert_eq!(back, a);
     }
+
+    #[test]
+    fn is_zero_true_for_zero() {
+        assert!(Scalar::zero().is_zero());
+    }
+
+    #[test]
+    fn is_zero_false_for_nonzero() {
+        assert!(!Scalar::one().is_zero());
+        assert!(!Scalar::from_u64(42).is_zero());
+    }
+
+    #[test]
+    fn mul_roundtrip() {
+        let a = Scalar::from_u64(7);
+        let b = Scalar::from_u64(6);
+        let product = a.mul(&b);
+        let back = product.div(&b);
+        assert_eq!(back, Some(a));
+    }
+
+    #[test]
+    fn inverse_nonzero() {
+        let five = Scalar::from_u64(5);
+        let inv = five.inverse().expect("inverse exists");
+        let result = five.mul(&inv);
+        assert_eq!(result, Scalar::one());
+    }
+
+    #[test]
+    fn from_u64_roundtrip() {
+        let original = Scalar::from_u64(0xDEADBEEFu64);
+        let bytes = original.to_bytes_le();
+        let decoded = Scalar::from_bytes_le(bytes);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn random_generates_nonzero() {
+        let mut rng = rand::thread_rng();
+        let scalar = Scalar::random(&mut rng);
+        assert!(!scalar.is_zero());
+    }
+
+    #[test]
+    fn as_blst_scalar_returns_reference() {
+        let scalar = Scalar::from_u64(42);
+        let _blst = scalar.as_blst_scalar();
+    }
 }

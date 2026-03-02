@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use commonware_runtime::{Clock, Runner};
 use consensus::consensus::ConsensusMessage;
-use consensus::crypto::aggregated::BlsSecretKey;
+use consensus::crypto::consensus_bls::BlsSecretKey;
 use consensus::state::block::Block;
 use consensus::state::transaction::Transaction;
 use p2p::config::{P2PConfig, ValidatorPeerInfo};

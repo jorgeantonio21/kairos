@@ -8,7 +8,7 @@ use std::time::Duration;
 use commonware_codec::ReadExt;
 use commonware_cryptography::{Signer, ed25519};
 use commonware_runtime::{Clock, Runner};
-use consensus::crypto::aggregated::PeerId;
+use consensus::crypto::consensus_bls::PeerId;
 
 use p2p::config::{P2PConfig, ValidatorPeerInfo};
 use p2p::message::channels;

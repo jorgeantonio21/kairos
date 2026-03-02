@@ -1,6 +1,6 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::crypto::aggregated::BlsPublicKey;
+use crypto::consensus_bls::BlsPublicKey;
 
 /// [`View`] represents a view in the consensus protocol.
 ///

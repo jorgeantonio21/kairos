@@ -33,7 +33,7 @@ visualizer    = { workspace = true }
 zeroize       = { workspace = true }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = { workspace = true }
 
 [[bench]]
 harness = false

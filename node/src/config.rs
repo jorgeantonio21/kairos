@@ -88,6 +88,10 @@ pub struct NodeConfig {
     /// Consensus visualizer configuration.
     #[serde(default)]
     pub visualizer: VisualizerConfig,
+
+    /// Threshold setup bootstrap configuration.
+    #[serde(default)]
+    pub threshold_setup: ThresholdSetupConfig,
 }
 
 /// Prometheus metrics exporter configuration.
@@ -154,6 +158,65 @@ impl Default for VisualizerConfig {
         Self {
             enabled: false,
             listen_address: "127.0.0.1:8080".parse().unwrap(),
+        }
+    }
+}
+
+/// Threshold setup mode.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThresholdMode {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+/// Boot-time threshold setup validation configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ThresholdSetupConfig {
+    /// Whether threshold setup loading/validation is enabled.
+    #[serde(default)]
+    pub mode: ThresholdMode,
+    /// Path to setup artifact JSON.
+    #[serde(default)]
+    pub artifact_path: Option<PathBuf>,
+    /// Optional expected validator set identifier.
+    #[serde(default)]
+    pub validator_set_id: Option<String>,
+    /// Expected group public key for the m/nullify keyset (hex-encoded compressed key).
+    #[serde(default)]
+    pub expected_m_nullify_group_public_key: Option<String>,
+    /// Expected group public key for the l-notarization keyset (hex-encoded compressed key).
+    #[serde(default)]
+    pub expected_l_notarization_group_public_key: Option<String>,
+    /// Optional bootstrap-RPC ceremony configuration used when artifact is absent at startup.
+    #[serde(default)]
+    pub bootstrap: Option<ThresholdBootstrapConfig>,
+}
+
+/// Threshold setup bootstrap RPC configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThresholdBootstrapConfig {
+    /// gRPC endpoint for bootstrap service (for example `http://127.0.0.1:7001`).
+    pub endpoint: String,
+    /// Local validator participant index for DKG (must match registration plan).
+    pub participant_index: u64,
+    /// If true, this node attempts to finalize the ceremony after submissions.
+    pub finalize_if_last: bool,
+    /// Maximum attempts for fetch/finalize polling loop.
+    pub max_attempts: u32,
+    /// Backoff between attempts in milliseconds.
+    pub backoff_ms: u64,
+}
+
+impl Default for ThresholdBootstrapConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: "http://127.0.0.1:7001".to_string(),
+            participant_index: 0,
+            finalize_if_last: false,
+            max_attempts: 60,
+            backoff_ms: 1000,
         }
     }
 }

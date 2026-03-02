@@ -5,7 +5,7 @@ use std::{hash::Hash, hash::Hasher, sync::Arc};
 
 use crate::{
     crypto::{
-        aggregated::{BlsSignature, PeerId},
+        consensus_bls::{BlsSignature, PeerId},
         transaction_crypto::TxSignature,
     },
     state::transaction::Transaction,
@@ -304,10 +304,10 @@ impl Hash for Block {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::aggregated::BlsSecretKey;
     use crate::crypto::transaction_crypto::TxSecretKey;
     use crate::state::address::Address;
     use crate::storage::conversions::serialize_for_db;
+    use crypto::consensus_bls::BlsSecretKey;
     use rand::thread_rng;
 
     fn gen_tx() -> Transaction {

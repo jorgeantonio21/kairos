@@ -1,4 +1,4 @@
-use consensus::crypto::aggregated::{
+use consensus::crypto::consensus_bls::{
     BlsPublicKey as ArkPublicKey, BlsSecretKey as ArkSecretKey, BlsSignature as ArkSignature,
 };
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
@@ -165,7 +165,7 @@ fn bench_aggregate_verify(c: &mut Criterion) {
 
     group.bench_function("ark/N32", |b| {
         b.iter(|| {
-            let ok = consensus::crypto::aggregated::BlsPublicKey::verify_threshold(
+            let ok = ArkPublicKey::verify_threshold(
                 black_box(&ark_public_key_array),
                 black_box(&ark_peer_id_array),
                 black_box(MESSAGE),

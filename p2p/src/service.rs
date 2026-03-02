@@ -12,7 +12,7 @@ use commonware_cryptography::{Signer, ed25519};
 use commonware_p2p::Receiver;
 use commonware_runtime::{Clock, Metrics, Network, Resolver, Runner, Spawner};
 use consensus::consensus::ConsensusMessage;
-use consensus::crypto::aggregated::PeerId;
+use consensus::crypto::consensus_bls::PeerId;
 use consensus::state::transaction::Transaction;
 use consensus::storage::store::ConsensusStore;
 use crossbeam::queue::ArrayQueue;
@@ -577,7 +577,7 @@ pub fn route_incoming_message<const N: usize, const F: usize, const M_SIZE: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use consensus::crypto::aggregated::BlsSecretKey;
+    use consensus::crypto::consensus_bls::BlsSecretKey;
     use consensus::state::block::Block;
     use consensus::state::transaction::Transaction;
     use rtrb::RingBuffer;

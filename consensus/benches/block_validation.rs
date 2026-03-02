@@ -12,7 +12,7 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 use std::sync::Arc;
 
 use consensus::{
-    crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+    crypto::{consensus_bls::BlsSecretKey, transaction_crypto::TxSecretKey},
     state::{
         account::Account,
         address::Address,

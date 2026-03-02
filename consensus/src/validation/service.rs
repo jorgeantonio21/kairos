@@ -241,12 +241,12 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use crate::crypto::aggregated::BlsSecretKey;
     use crate::crypto::transaction_crypto::TxSecretKey;
     use crate::state::account::Account;
     use crate::state::address::Address;
     use crate::state::transaction::Transaction;
     use crate::validation::StateDiff;
+    use crypto::consensus_bls::BlsSecretKey;
 
     fn temp_db_path() -> PathBuf {
         let mut p = std::env::temp_dir();

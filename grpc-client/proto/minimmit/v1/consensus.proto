@@ -36,7 +36,7 @@ message LNotarizationResponse {
     uint64 height = 3;
     // Aggregated BLS signature (hex-encoded)
     string aggregated_signature = 4;
-    // Peer IDs of validators who signed
+    // Deprecated for compact threshold proofs. Always empty.
     repeated uint64 peer_ids = 5;
     // Error code if not found
     ErrorCode error = 6;

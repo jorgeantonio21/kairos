@@ -15,7 +15,10 @@ use consensus::{
     consensus_manager::config::{ConsensusConfig, GenesisAccount, Network as NetworkType},
     consensus_manager::consensus_engine::ConsensusEngine,
     consensus_manager::leader_manager::LeaderSelectionStrategy,
-    crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+    crypto::{
+        consensus_bls::{BlsSecretKey, ThresholdSignerContext},
+        transaction_crypto::TxSecretKey,
+    },
     mempool::MempoolService,
     metrics::ConsensusMetrics,
     state::{address::Address, block::Block, peer::PeerSet, transaction::Transaction},
@@ -32,6 +35,7 @@ use slog::{Drain, Level, Logger, o};
 use tempfile::TempDir;
 use tonic::transport::Channel;
 
+use crate::threshold_support::build_threshold_test_material;
 use grpc_client::config::{Network as RpcNetwork, RpcConfig};
 use grpc_client::proto::transaction_service_client::TransactionServiceClient;
 use grpc_client::proto::{SubmitTransactionRequest, SubmitTransactionResponse};
@@ -89,7 +93,7 @@ pub struct GossipTestNode<const N: usize, const F: usize, const M_SIZE: usize> {
     pub mempool_service: MempoolService,
 
     /// Peer ID (BLS-based)
-    pub peer_id: consensus::crypto::aggregated::PeerId,
+    pub peer_id: consensus::crypto::consensus_bls::PeerId,
 
     /// Node index (0-based)
     pub node_idx: usize,
@@ -123,6 +127,12 @@ pub struct GossipTestNetwork<const N: usize, const F: usize, const M_SIZE: usize
 
     /// Logger
     pub logger: Logger,
+}
+
+#[derive(Clone)]
+struct GossipConsensusOverrides {
+    threshold_signer: Option<ThresholdSignerContext>,
+    peers_override: Option<PeerSet>,
 }
 
 /// Creates funded test transactions and genesis accounts.
@@ -175,6 +185,16 @@ pub fn create_test_transaction(
 pub fn create_gossip_test_network(
     num_nodes: usize,
     with_consensus: bool,
+    logger: Logger,
+) -> GossipTestNetwork<N, F, M_SIZE> {
+    create_gossip_test_network_with_options(num_nodes, with_consensus, false, logger)
+}
+
+/// Creates a gossip test network with optional threshold-signing consensus mode.
+pub fn create_gossip_test_network_with_options(
+    num_nodes: usize,
+    with_consensus: bool,
+    with_threshold_consensus: bool,
     logger: Logger,
 ) -> GossipTestNetwork<N, F, M_SIZE> {
     // Create funded accounts for testing (enough for many transactions)
@@ -255,6 +275,15 @@ pub fn create_gossip_test_network(
         p2p_configs.push(p2p_config);
     }
 
+    let threshold_material = if with_consensus && with_threshold_consensus {
+        Some(
+            build_threshold_test_material(&identities, num_nodes, F, "tests-gossip-threshold")
+                .expect("build threshold test material"),
+        )
+    } else {
+        None
+    };
+
     // Spawn all nodes
     let mut nodes = Vec::new();
     let mut stores = Vec::new();
@@ -265,7 +294,18 @@ pub fn create_gossip_test_network(
         .zip(p2p_configs.into_iter())
         .enumerate()
     {
+        let peer_id = identity.peer_id();
         let node_logger = logger.new(o!("node" => i, "peer_id" => identity.peer_id()));
+        let threshold_signer = threshold_material
+            .as_ref()
+            .and_then(|material| material.signer_by_peer_id.get(&peer_id).cloned());
+        let peers_override = threshold_material
+            .as_ref()
+            .map(|material| material.peer_set.clone());
+        let consensus_overrides = GossipConsensusOverrides {
+            threshold_signer,
+            peers_override,
+        };
 
         let (node, storage, temp_dir) = create_gossip_node(
             i,
@@ -273,6 +313,7 @@ pub fn create_gossip_test_network(
             p2p_config,
             consensus_config.clone(),
             with_consensus,
+            consensus_overrides,
             node_logger,
         );
 
@@ -298,6 +339,7 @@ fn create_gossip_node(
     p2p_config: P2PConfig,
     consensus_config: ConsensusConfig,
     with_consensus: bool,
+    consensus_overrides: GossipConsensusOverrides,
     logger: Logger,
 ) -> (GossipTestNode<N, F, M_SIZE>, Arc<ConsensusStore>, TempDir) {
     let _peer_id = identity.peer_id();
@@ -413,10 +455,12 @@ fn create_gossip_node(
     // Optionally create consensus engine
     let consensus_engine = if with_consensus {
         Some(
-            ConsensusEngine::<N, F, M_SIZE>::new(
+            ConsensusEngine::<N, F, M_SIZE>::new_with_peers(
                 consensus_config,
                 peer_id,
                 bls_secret_key,
+                consensus_overrides.threshold_signer,
+                consensus_overrides.peers_override,
                 consensus_msg_consumer,
                 broadcast_notify,
                 broadcast_producer,

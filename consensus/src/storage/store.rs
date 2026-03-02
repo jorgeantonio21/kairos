@@ -552,7 +552,7 @@ mod tests {
     use super::*;
     use crate::{
         crypto::{
-            aggregated::{AggregatedSignature, BlsPublicKey, BlsSecretKey, PeerId},
+            consensus_bls::{BlsPublicKey, BlsSecretKey, BlsSignature, PeerId},
             transaction_crypto::{TxPublicKey, TxSecretKey},
         },
         state::{address::Address, peer::PeerSet},
@@ -725,7 +725,7 @@ mod tests {
 
             let (_leader_sk, leader_pk) = gen_bls_keypair();
             let leader_id = leader_pk.to_peer_id();
-            let leader = Leader::new(leader_id, 10);
+            let leader = Leader::new(leader_id, 0, 10); // index 0 for test
 
             store.put_leader(&leader).unwrap();
             let fetched = store.get_leader(10).unwrap().expect("get leader");
@@ -831,20 +831,36 @@ mod tests {
 
             let pks_vec = vec![pk1, pk2, pk3];
             let pks: [BlsPublicKey; M_SIZE] = pks_vec.try_into().unwrap();
-            let sigs = vec![s1, s2, s3];
-
             let peer_ids: [PeerId; M_SIZE] = pks
                 .iter()
                 .map(|pk| pk.to_peer_id())
                 .collect::<Vec<PeerId>>()
                 .try_into()
                 .unwrap();
-            let agg = AggregatedSignature::<M_SIZE>::new(pks, peer_ids, &msg, &sigs).expect("agg");
+            let base_peer_set = PeerSet::new(pks.to_vec());
+            let peer_set = PeerSet::with_threshold_material(
+                pks.to_vec(),
+                base_peer_set.indices.clone(),
+                base_peer_set.id_to_public_key.clone(),
+                base_peer_set.id_to_public_key.clone(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+            let participant_indices: [u64; M_SIZE] =
+                std::array::from_fn(|i| peer_set.get_index(&peer_ids[i]).unwrap());
+            let partials = [
+                (participant_indices[0], s1),
+                (participant_indices[1], s2),
+                (participant_indices[2], s3),
+            ];
+            let aggregated_signature =
+                BlsSignature::combine_partials(&partials).expect("combine partials");
             let m = MNotarization::<N, F, M_SIZE>::new(
                 6,
                 block.get_hash(),
-                agg.aggregated_signature,
-                peer_ids,
+                aggregated_signature,
                 0,
             );
 
@@ -856,7 +872,7 @@ mod tests {
                 .expect("get mnotar");
 
             assert_eq!(fetched.block_hash, block.get_hash());
-            assert!(fetched.verify(&PeerSet::new(pks.to_vec())));
+            assert!(fetched.verify(&peer_set));
         }
         std::fs::remove_file(&path).ok();
     }
@@ -917,12 +933,32 @@ mod tests {
                 .collect::<Vec<PeerId>>()
                 .try_into()
                 .unwrap();
-            let agg =
-                AggregatedSignature::<M_SIZE>::new(pks, peer_ids, msg.as_bytes(), &[s1, s2, s3])
-                    .expect("Failed to create aggregated signature");
+            let base_peer_set = PeerSet::new(pks.to_vec());
+            let peer_set = PeerSet::with_threshold_material(
+                pks.to_vec(),
+                base_peer_set.indices.clone(),
+                base_peer_set.id_to_public_key.clone(),
+                base_peer_set.id_to_public_key.clone(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+            let participant_indices: [u64; M_SIZE] =
+                std::array::from_fn(|i| peer_set.get_index(&peer_ids[i]).unwrap());
+            let partials = [
+                (participant_indices[0], s1),
+                (participant_indices[1], s2),
+                (participant_indices[2], s3),
+            ];
+            let aggregated_signature =
+                BlsSignature::combine_partials(&partials).expect("combine partials");
 
-            let nullif =
-                Nullification::<N, F, M_SIZE>::new(view, 1, agg.aggregated_signature, peer_ids);
+            let nullif = Nullification::<N, F, M_SIZE>::new(
+                view,
+                1,
+                aggregated_signature,
+            );
             store.put_nullification(&nullif).unwrap();
 
             let fetched = store
@@ -931,7 +967,7 @@ mod tests {
                 .expect("get nullification");
             assert_eq!(fetched.view, view);
             assert_eq!(fetched.leader_id, 1);
-            assert!(fetched.verify(&PeerSet::new(pks.to_vec())));
+            assert!(fetched.verify(&peer_set));
         }
         std::fs::remove_file(&path).ok();
     }

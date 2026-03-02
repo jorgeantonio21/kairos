@@ -1,6 +1,9 @@
 pub mod bls;
 pub mod consensus_bls;
+pub mod dkg;
+pub mod error;
 pub mod polynomial;
 pub mod scalar;
 pub mod threshold;
 pub mod threshold_math;
+pub mod threshold_setup;

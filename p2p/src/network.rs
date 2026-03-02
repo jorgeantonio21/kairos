@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn test_validator_public_key_parsing() {
         use crate::config::ValidatorPeerInfo;
-        use consensus::crypto::aggregated::PeerId;
+        use consensus::crypto::consensus_bls::PeerId;
 
         // Valid hex public key (32 bytes = 64 hex chars)
         let signer = ed25519::PrivateKey::from_seed(42);
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_invalid_public_key_parsing() {
         use crate::config::ValidatorPeerInfo;
-        use consensus::crypto::aggregated::PeerId;
+        use consensus::crypto::consensus_bls::PeerId;
 
         let validator = ValidatorPeerInfo {
             ed25519_public_key: "not_valid_hex".to_string(),
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn test_bootstrapper_requires_address() {
         use crate::config::ValidatorPeerInfo;
-        use consensus::crypto::aggregated::PeerId;
+        use consensus::crypto::consensus_bls::PeerId;
 
         let signer = ed25519::PrivateKey::from_seed(42);
         let pk = signer.public_key();
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn test_valid_validator_creates_bootstrapper() {
         use crate::config::ValidatorPeerInfo;
-        use consensus::crypto::aggregated::PeerId;
+        use consensus::crypto::consensus_bls::PeerId;
 
         let signer = ed25519::PrivateKey::from_seed(42);
         let pk = signer.public_key();

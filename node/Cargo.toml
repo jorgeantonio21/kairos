@@ -5,9 +5,11 @@ version = "0.1.0"
 
 [dependencies]
 # Workspace crates
-consensus   = { workspace = true }
-grpc-client = { workspace = true }
-p2p         = { workspace = true }
+bootstrap-rpc = { workspace = true }
+consensus     = { workspace = true }
+crypto        = { workspace = true }
+grpc-client   = { workspace = true }
+p2p           = { workspace = true }
 
 # Core dependencies
 anyhow                      = { workspace = true }
@@ -28,7 +30,11 @@ slog-json                   = { workspace = true }
 slog-term                   = { workspace = true }
 tempfile                    = { workspace = true }
 tokio                       = { workspace = true }
+tonic                       = { workspace = true }
 visualizer                  = { workspace = true }
 
 # Async runtime for P2P
 commonware-runtime = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

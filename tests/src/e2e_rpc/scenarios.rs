@@ -49,7 +49,7 @@ use consensus::{
         config::{ConsensusConfig, GenesisAccount},
         consensus_engine::ConsensusEngine,
     },
-    crypto::{aggregated::BlsSecretKey, transaction_crypto::TxSecretKey},
+    crypto::{consensus_bls::BlsSecretKey, transaction_crypto::TxSecretKey},
     mempool::MempoolService,
     metrics::ConsensusMetrics,
     state::{address::Address, peer::PeerSet, transaction::Transaction},
@@ -235,6 +235,7 @@ fn create_validator_node_setup<const N: usize, const F: usize, const M_SIZE: usi
         consensus_config,
         peer_id,
         bls_secret_key,
+        None,
         consensus_msg_consumer,
         broadcast_notify,
         broadcast_producer,
@@ -1571,8 +1572,8 @@ fn test_rpc_node_l_notarization_queries() {
             assert!(!l_notarization_response.block_hash.is_empty());
             assert!(!l_notarization_response.aggregated_signature.is_empty());
             assert!(
-                !l_notarization_response.peer_ids.is_empty(),
-                "L-notarization should have signer peer IDs"
+                l_notarization_response.peer_ids.is_empty(),
+                "Compact L-notarization should not expose signer peer IDs"
             );
 
             slog::info!(

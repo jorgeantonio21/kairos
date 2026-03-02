@@ -54,6 +54,7 @@
 //! The `ValidatorNode` follows a dependency-based spawn order and reverse shutdown order
 //! to ensure clean lifecycle management. See the [`node`] module documentation for details.
 
+pub mod bootstrap_client;
 pub mod config;
 pub mod node;
 

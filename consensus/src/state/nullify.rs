@@ -107,7 +107,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> Nullification<N, F, M_
             hash.as_bytes().to_vec()
         };
         match peer_set.m_group_public_key.as_ref() {
-            Some(group_public_key) => group_public_key.verify(&message, &self.aggregated_signature.0),
+            Some(group_public_key) => {
+                group_public_key.verify(&message, &self.aggregated_signature.0)
+            }
             None => false,
         }
     }

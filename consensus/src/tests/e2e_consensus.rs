@@ -819,10 +819,9 @@ fn test_e2e_consensus_continuous_load() {
         "inclusion_rate" => format!("{:.2}%", inclusion_rate * 100.0)
     );
 
-    // We expect the majority of transactions to be finalized, while allowing some backlog under
-    // sustained submission load.
+    // Expect high inclusion despite load (some in-flight backlog is acceptable at shutdown).
     assert!(
-        inclusion_rate > 0.8,
+        inclusion_rate > 0.9,
         "Transaction inclusion rate too low: {:.2}%",
         inclusion_rate * 100.0
     );

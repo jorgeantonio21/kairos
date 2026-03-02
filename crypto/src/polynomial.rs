@@ -60,7 +60,7 @@ impl Polynomial {
 mod tests {
     use super::Polynomial;
     use crate::scalar::Scalar;
-    use rand::{rngs::StdRng, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
     fn degree_and_constant_term() {

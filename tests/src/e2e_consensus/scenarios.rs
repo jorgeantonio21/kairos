@@ -962,10 +962,7 @@ fn test_multi_node_continuous_load() {
     {
         let peer_id = identity.peer_id();
         let node_logger = logger.new(o!("node" => i, "peer_id" => peer_id));
-        let threshold_signer = threshold_material
-            .signer_by_peer_id
-            .get(&peer_id)
-            .cloned();
+        let threshold_signer = threshold_material.signer_by_peer_id.get(&peer_id).cloned();
         let peers_override = Some(threshold_material.peer_set.clone());
         let (node, storage, temp_dir) = create_node_setup_with_threshold(
             identity,

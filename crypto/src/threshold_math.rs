@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 use crate::bls::constants::INVALID_PEER_ID;
 use crate::scalar::Scalar;

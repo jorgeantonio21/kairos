@@ -143,7 +143,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> MNotarization<N, F, M_
             self.block_hash.to_vec()
         };
         match peer_set.m_group_public_key.as_ref() {
-            Some(group_public_key) => group_public_key.verify(&message, &self.aggregated_signature.0),
+            Some(group_public_key) => {
+                group_public_key.verify(&message, &self.aggregated_signature.0)
+            }
             None => false,
         }
     }
@@ -216,7 +218,9 @@ impl<const N: usize, const F: usize> LNotarization<N, F> {
             self.block_hash.to_vec()
         };
         match peer_set.l_group_public_key.as_ref() {
-            Some(group_public_key) => group_public_key.verify(&message, &self.aggregated_signature.0),
+            Some(group_public_key) => {
+                group_public_key.verify(&message, &self.aggregated_signature.0)
+            }
             None => false,
         }
     }
@@ -312,8 +316,12 @@ mod tests {
 
         let notarization =
             MNotarization::<3, 1, 3>::new(10, block_hash, aggregated_signature, peer_ids[0]);
-        let wrong_domain_peer_set =
-            threshold_peer_set_with_domains(&keypairs, b"wrong-domain", b"nullify-domain", l_domain);
+        let wrong_domain_peer_set = threshold_peer_set_with_domains(
+            &keypairs,
+            b"wrong-domain",
+            b"nullify-domain",
+            l_domain,
+        );
         assert!(!notarization.verify(&wrong_domain_peer_set));
     }
 
@@ -341,12 +349,7 @@ mod tests {
             .map(|(index, secret_key)| (*index, secret_key.sign(&wrong_message).into()))
             .collect::<Vec<_>>();
         let aggregated_signature = ThresholdProof::combine_partials(&partials).expect("combine");
-        let notarization = LNotarization::<3, 1>::new(
-            11,
-            block_hash,
-            aggregated_signature,
-            11,
-        );
+        let notarization = LNotarization::<3, 1>::new(11, block_hash, aggregated_signature, 11);
         assert!(!notarization.verify(&peer_set));
     }
 

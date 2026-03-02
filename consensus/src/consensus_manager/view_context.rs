@@ -1442,16 +1442,20 @@ mod tests {
         let mut peer_id_to_l_secret_share = HashMap::with_capacity(size);
 
         for (position, peer_id) in sorted_peer_ids.iter().copied().enumerate() {
-            let m_share = dual_dkg.m_nullify.participant_shares[position].secret_share.clone();
+            let m_share = dual_dkg.m_nullify.participant_shares[position]
+                .secret_share
+                .clone();
             let l_share = dual_dkg.l_notarization.participant_shares[position]
                 .secret_share
                 .clone();
 
             let m_pk = BlsPublicKey(
-                public_key_from_scalar(&m_share).expect("M-share public key derivation must succeed"),
+                public_key_from_scalar(&m_share)
+                    .expect("M-share public key derivation must succeed"),
             );
             let l_pk = BlsPublicKey(
-                public_key_from_scalar(&l_share).expect("L-share public key derivation must succeed"),
+                public_key_from_scalar(&l_share)
+                    .expect("L-share public key derivation must succeed"),
             );
 
             id_to_m_share_public_key.insert(peer_id, m_pk);
@@ -1543,12 +1547,14 @@ mod tests {
             .as_ref()
             .expect("nullify domain must be configured");
         let message = blake3::hash(&[view.to_le_bytes(), leader_id.to_le_bytes()].concat());
-        let mut signed_message = Vec::with_capacity(nullify_domain.len() + message.as_bytes().len());
+        let mut signed_message =
+            Vec::with_capacity(nullify_domain.len() + message.as_bytes().len());
         signed_message.extend_from_slice(nullify_domain);
         signed_message.extend_from_slice(message.as_bytes());
 
         let signature = ThresholdPartialSignature(BlsSignature(
-            sign_with_scalar(m_share, &signed_message).expect("nullify partial signature must succeed"),
+            sign_with_scalar(m_share, &signed_message)
+                .expect("nullify partial signature must succeed"),
         ));
 
         Nullify::new(view, leader_id, signature, peer_id)
@@ -3062,12 +3068,7 @@ mod tests {
 
         // Create M-notarization with invalid signature
         let wrong_signature = BlsSecretKey::generate(&mut thread_rng()).sign(&[99u8; 32]);
-        let invalid_m_notarization = MNotarization::new(
-            10,
-            block_hash,
-            wrong_signature,
-            leader_id,
-        );
+        let invalid_m_notarization = MNotarization::new(10, block_hash, wrong_signature, leader_id);
 
         let result = context.add_m_notarization(invalid_m_notarization, peers);
         assert!(result.is_err());

@@ -666,7 +666,7 @@ mod tests {
     use crate::bls::ops::{sign_with_scalar, verify_signature_bytes};
     use crate::consensus_bls::BlsSignature;
     use crate::threshold_math::lagrange_coefficients_for_indices;
-    use rand::{rngs::StdRng, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng};
 
     fn combine_signature_shares(
         shares: &[ParticipantShare],

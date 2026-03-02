@@ -516,7 +516,12 @@ mod tests {
         artifact.validators[2].peer_id = artifact.validators[0].peer_id;
         let result = artifact.validate_for_node(artifact.peer_id, artifact.n, artifact.f, None);
         assert!(result.is_err());
-        assert!(result.expect_err("error").to_string().contains("duplicate peer_id"));
+        assert!(
+            result
+                .expect_err("error")
+                .to_string()
+                .contains("duplicate peer_id")
+        );
     }
 
     #[test]
@@ -525,7 +530,12 @@ mod tests {
         artifact.validators[2].participant_index = artifact.validators[0].participant_index;
         let result = artifact.validate_for_node(artifact.peer_id, artifact.n, artifact.f, None);
         assert!(result.is_err());
-        assert!(result.expect_err("error").to_string().contains("duplicate participant_index"));
+        assert!(
+            result
+                .expect_err("error")
+                .to_string()
+                .contains("duplicate participant_index")
+        );
     }
 
     #[test]
@@ -534,7 +544,12 @@ mod tests {
         artifact.validators[0].participant_index = 99;
         let result = artifact.validate_for_node(artifact.peer_id, artifact.n, artifact.f, None);
         assert!(result.is_err());
-        assert!(result.expect_err("error").to_string().contains("participant_index"));
+        assert!(
+            result
+                .expect_err("error")
+                .to_string()
+                .contains("participant_index")
+        );
     }
 
     #[test]
@@ -559,7 +574,12 @@ mod tests {
         artifact.keysets.m_nullify.group_public_key = "invalid".to_string();
         let result = artifact.validate_for_node(artifact.peer_id, artifact.n, artifact.f, None);
         assert!(result.is_err());
-        assert!(result.expect_err("error").to_string().contains("group public key"));
+        assert!(
+            result
+                .expect_err("error")
+                .to_string()
+                .contains("group public key")
+        );
     }
 
     #[test]
@@ -648,7 +668,8 @@ mod tests {
     #[test]
     fn decode_rejects_invalid_group_key_bytes() {
         let mut artifact = valid_artifact();
-        artifact.keysets.m_nullify.group_public_key = "00000000000000000000000000000000000000000000000000000000000000ff".to_string();
+        artifact.keysets.m_nullify.group_public_key =
+            "00000000000000000000000000000000000000000000000000000000000000ff".to_string();
         let err = artifact.decode().expect_err("must fail");
         assert!(err.to_string().contains("bytes"));
     }

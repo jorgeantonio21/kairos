@@ -857,12 +857,8 @@ mod tests {
             ];
             let aggregated_signature =
                 BlsSignature::combine_partials(&partials).expect("combine partials");
-            let m = MNotarization::<N, F, M_SIZE>::new(
-                6,
-                block.get_hash(),
-                aggregated_signature,
-                0,
-            );
+            let m =
+                MNotarization::<N, F, M_SIZE>::new(6, block.get_hash(), aggregated_signature, 0);
 
             store.put_notarization(&m).unwrap();
             let h = block.get_hash();
@@ -954,11 +950,7 @@ mod tests {
             let aggregated_signature =
                 BlsSignature::combine_partials(&partials).expect("combine partials");
 
-            let nullif = Nullification::<N, F, M_SIZE>::new(
-                view,
-                1,
-                aggregated_signature,
-            );
+            let nullif = Nullification::<N, F, M_SIZE>::new(view, 1, aggregated_signature);
             store.put_nullification(&nullif).unwrap();
 
             let fetched = store

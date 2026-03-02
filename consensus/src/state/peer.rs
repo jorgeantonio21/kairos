@@ -136,16 +136,12 @@ impl PeerSet {
                     .expect("peer id must exist in id_to_public_key")
             })
             .collect::<Vec<_>>();
-        let m_group_public_key = BlsPublicKey::interpolate_threshold_public_key(
-            &ordered_public_keys,
-            &indices,
-        )
-        .expect("peer set interpolation must succeed for unique non-zero indices");
-        let l_group_public_key = BlsPublicKey::interpolate_threshold_public_key(
-            &ordered_public_keys,
-            &indices,
-        )
-        .expect("peer set interpolation must succeed for unique non-zero indices");
+        let m_group_public_key =
+            BlsPublicKey::interpolate_threshold_public_key(&ordered_public_keys, &indices)
+                .expect("peer set interpolation must succeed for unique non-zero indices");
+        let l_group_public_key =
+            BlsPublicKey::interpolate_threshold_public_key(&ordered_public_keys, &indices)
+                .expect("peer set interpolation must succeed for unique non-zero indices");
 
         Self {
             id_to_m_share_public_key: id_to_public_key.clone(),
@@ -192,13 +188,19 @@ impl PeerSet {
             .collect::<Vec<_>>();
 
         // Ensure there are no duplicate peer IDs.
-        let mut sorted_peer_ids = entries.iter().map(|(peer_id, _, _)| *peer_id).collect::<Vec<_>>();
+        let mut sorted_peer_ids = entries
+            .iter()
+            .map(|(peer_id, _, _)| *peer_id)
+            .collect::<Vec<_>>();
         sorted_peer_ids.sort();
         sorted_peer_ids.dedup();
         assert_eq!(sorted_peer_ids.len(), original_len);
 
         // Ensure participant indices are unique and non-zero.
-        let mut unique_indices = entries.iter().map(|(_, _, index)| *index).collect::<Vec<_>>();
+        let mut unique_indices = entries
+            .iter()
+            .map(|(_, _, index)| *index)
+            .collect::<Vec<_>>();
         unique_indices.sort_unstable();
         unique_indices.dedup();
         assert_eq!(unique_indices.len(), original_len);
@@ -228,12 +230,16 @@ impl PeerSet {
             .iter()
             .map(|(_, public_key, _)| *public_key)
             .collect::<Vec<_>>();
-        let m_group_public_key =
-            BlsPublicKey::interpolate_threshold_public_key(&ordered_public_keys, &interpolation_indices)
-                .expect("peer set interpolation must succeed for unique non-zero indices");
-        let l_group_public_key =
-            BlsPublicKey::interpolate_threshold_public_key(&ordered_public_keys, &interpolation_indices)
-                .expect("peer set interpolation must succeed for unique non-zero indices");
+        let m_group_public_key = BlsPublicKey::interpolate_threshold_public_key(
+            &ordered_public_keys,
+            &interpolation_indices,
+        )
+        .expect("peer set interpolation must succeed for unique non-zero indices");
+        let l_group_public_key = BlsPublicKey::interpolate_threshold_public_key(
+            &ordered_public_keys,
+            &interpolation_indices,
+        )
+        .expect("peer set interpolation must succeed for unique non-zero indices");
 
         Self {
             id_to_m_share_public_key: id_to_public_key.clone(),

@@ -1,11 +1,11 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use blst::{
-    blst_hash_to_g1, blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_compress,
-    blst_p1_affine_in_g1, blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p1_uncompress,
-    blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_affine_compress, blst_p2_affine_in_g2,
-    blst_p2_from_affine, blst_p2_generator, blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
+    BLST_ERROR, blst_hash_to_g1, blst_p1, blst_p1_add_or_double, blst_p1_affine,
+    blst_p1_affine_compress, blst_p1_affine_in_g1, blst_p1_from_affine, blst_p1_mult,
+    blst_p1_to_affine, blst_p1_uncompress, blst_p2, blst_p2_add_or_double, blst_p2_affine,
+    blst_p2_affine_compress, blst_p2_affine_in_g2, blst_p2_from_affine, blst_p2_generator,
+    blst_p2_mult, blst_p2_to_affine, blst_p2_uncompress,
     min_sig::{PublicKey, SecretKey, Signature},
-    BLST_ERROR,
 };
 
 use crate::bls::constants::{BLS_PUBLIC_KEY_BYTES, BLS_SIGNATURE_BYTES, DST, SCALAR_BITS};
@@ -272,7 +272,7 @@ mod tests {
     use super::*;
     use crate::bls::constants::INVALID_PEER_ID;
     use crate::threshold_math::lagrange_coefficients_for_indices;
-    use rand::{rngs::StdRng, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
     fn secret_key_roundtrip_sign_verify() {

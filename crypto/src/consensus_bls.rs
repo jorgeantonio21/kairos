@@ -14,7 +14,7 @@
 
 use std::str::FromStr;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use blst::min_sig::PublicKey;
 use rand::{CryptoRng, RngCore};
 use rkyv::{Archive, Deserialize, Serialize};
@@ -488,7 +488,7 @@ impl<const N: usize> AggregatedSignature<N> {
 mod tests {
     use super::*;
     use crate::threshold::{ThresholdBLS, ThresholdBLS as Scheme};
-    use rand::{rngs::StdRng, thread_rng, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng, thread_rng};
 
     const TEST_THRESHOLD: usize = 3;
     const TEST_TOTAL_PARTICIPANTS: usize = 5;
@@ -821,10 +821,7 @@ mod tests {
         let partial = ctx
             .partial_sign(ThresholdDomain::MNotarization, b"test")
             .expect("sign");
-        let result = ctx.combine_partials(
-            ThresholdDomain::MNotarization,
-            &[(1, partial)],
-        );
+        let result = ctx.combine_partials(ThresholdDomain::MNotarization, &[(1, partial)]);
         assert!(result.is_err());
     }
 

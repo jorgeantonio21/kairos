@@ -70,7 +70,9 @@ pub(crate) fn create_notarization_data<const N: usize>(
         })
         .collect::<Result<Vec<_>>>()?;
     let aggregated_signature = ThresholdProof::combine_partials(&partials)?;
-    Ok(NotarizationData { aggregated_signature })
+    Ok(NotarizationData {
+        aggregated_signature,
+    })
 }
 
 /// Data structure containing the aggregated signature and peer IDs for a nullification.
@@ -138,5 +140,7 @@ pub(crate) fn create_nullification_data<const N: usize>(
         })
         .collect::<Result<Vec<_>>>()?;
     let aggregated_signature = ThresholdProof::combine_partials(&partials)?;
-    Ok(NullificationData { aggregated_signature })
+    Ok(NullificationData {
+        aggregated_signature,
+    })
 }

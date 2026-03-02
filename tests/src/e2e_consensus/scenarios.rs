@@ -19,7 +19,7 @@ use consensus::{
         consensus_engine::ConsensusEngine,
     },
     crypto::{
-        consensus_bls::{BlsSecretKey, ThresholdSignerContext},
+        consensus_bls::{BlsSecretKey, ThresholdDomain, ThresholdSignerContext},
         transaction_crypto::TxSecretKey,
     },
     mempool::MempoolService,
@@ -198,20 +198,6 @@ fn create_funded_test_transactions(
     }
 
     (transactions, genesis_accounts)
-}
-
-/// Creates a node setup with P2P and consensus components.
-///
-/// Returns the NodeSetup, storage reference, and temp directory separately so that
-/// storage can be accessed for verification after the node is shut down.
-/// The temp directory must be kept alive until verification completes.
-fn create_node_setup<const N: usize, const F: usize, const M_SIZE: usize>(
-    identity: ValidatorIdentity,
-    p2p_config: P2PConfig,
-    consensus_config: ConsensusConfig,
-    logger: Logger,
-) -> (NodeSetup<N, F, M_SIZE>, Arc<ConsensusStore>, TempDir) {
-    create_node_setup_with_threshold(identity, p2p_config, consensus_config, None, None, logger)
 }
 
 fn create_node_setup_with_threshold<const N: usize, const F: usize, const M_SIZE: usize>(
@@ -400,20 +386,15 @@ async fn submit_transaction_via_grpc(
 /// ```bash
 /// cargo test --package tests --lib test_multi_node_happy_path -- --ignored --nocapture
 /// ```
-fn run_multi_node_happy_path(threshold_mode: bool) {
+fn run_multi_node_happy_path() {
     let logger = create_test_logger();
-    let mode = if threshold_mode {
-        "threshold"
-    } else {
-        "legacy"
-    };
 
     slog::info!(
         logger,
         "Starting multi-node integration test with P2P (happy path)";
         "nodes" => N,
         "byzantine_tolerance" => F,
-        "mode" => mode,
+        "signature_scheme" => "threshold-bls",
     );
 
     // Phase 1: Generate identities and create funded transactions
@@ -458,21 +439,15 @@ fn run_multi_node_happy_path(threshold_mode: bool) {
         peers: peer_strs,
         genesis_accounts: genesis_accounts.clone(),
     };
-
     slog::info!(
         logger,
         "Generated identities and peer set";
         "peer_ids" => ?peer_set.sorted_peer_ids,
     );
 
-    let threshold_material = if threshold_mode {
-        Some(
-            build_threshold_test_material(&identities, N, F, "tests-e2e-consensus-threshold")
-                .expect("build threshold test material"),
-        )
-    } else {
-        None
-    };
+    let threshold_material =
+        build_threshold_test_material(&identities, N, F, "tests-e2e-consensus-threshold")
+            .expect("build threshold test material");
 
     // Phase 2: Create P2P configs for each node
     slog::info!(logger, "Phase 2: Creating P2P configurations");
@@ -535,12 +510,14 @@ fn run_multi_node_happy_path(threshold_mode: bool) {
     {
         let peer_id = identity.peer_id();
         let node_logger = logger.new(o!("node" => i, "peer_id" => identity.peer_id()));
-        let threshold_signer = threshold_material
-            .as_ref()
-            .and_then(|material| material.signer_by_peer_id.get(&peer_id).cloned());
-        let peers_override = threshold_material
-            .as_ref()
-            .map(|material| material.peer_set.clone());
+        let threshold_signer = Some(
+            threshold_material
+                .signer_by_peer_id
+                .get(&peer_id)
+                .cloned()
+                .expect("threshold signer must exist for honest node"),
+        );
+        let peers_override = Some(threshold_material.peer_set.clone());
         let (node, storage, temp_dir) = create_node_setup_with_threshold(
             identity,
             p2p_config,
@@ -819,13 +796,7 @@ fn run_multi_node_happy_path(threshold_mode: bool) {
 #[test]
 #[ignore] // Run with: cargo test --package tests --lib test_multi_node_happy_path -- --ignored --nocapture
 fn test_multi_node_happy_path() {
-    run_multi_node_happy_path(false);
-}
-
-#[test]
-#[ignore] // Run with: cargo test --package tests --lib test_multi_node_happy_path_threshold_mode -- --ignored --nocapture
-fn test_multi_node_happy_path_threshold_mode() {
-    run_multi_node_happy_path(true);
+    run_multi_node_happy_path();
 }
 
 /// Continuous load integration test with 6 nodes.
@@ -962,7 +933,13 @@ fn test_multi_node_continuous_load() {
     {
         let peer_id = identity.peer_id();
         let node_logger = logger.new(o!("node" => i, "peer_id" => peer_id));
-        let threshold_signer = threshold_material.signer_by_peer_id.get(&peer_id).cloned();
+        let threshold_signer = Some(
+            threshold_material
+                .signer_by_peer_id
+                .get(&peer_id)
+                .cloned()
+                .expect("threshold signer must exist for honest node"),
+        );
         let peers_override = Some(threshold_material.peer_set.clone());
         let (node, storage, temp_dir) = create_node_setup_with_threshold(
             identity,
@@ -1184,6 +1161,13 @@ fn test_multi_node_crashed_replica() {
         peers: peer_strs,
         genesis_accounts: genesis_accounts.clone(),
     };
+    let threshold_material = build_threshold_test_material(
+        &identities,
+        N,
+        F,
+        "tests-e2e-consensus-crashed-replica",
+    )
+    .expect("build threshold test material");
 
     // Phase 2: P2P Config
     let base_port = 40000u16 + (rand::random::<u16>() % 10000);
@@ -1231,9 +1215,24 @@ fn test_multi_node_crashed_replica() {
         .zip(p2p_configs.into_iter())
         .enumerate()
     {
-        let node_logger = logger.new(o!("node" => i, "peer_id" => identity.peer_id()));
-        let (node, storage, temp_dir) =
-            create_node_setup(identity, p2p_config, consensus_config.clone(), node_logger);
+        let peer_id = identity.peer_id();
+        let node_logger = logger.new(o!("node" => i, "peer_id" => peer_id));
+        let threshold_signer = Some(
+            threshold_material
+                .signer_by_peer_id
+                .get(&peer_id)
+                .cloned()
+                .expect("threshold signer must exist for honest node"),
+        );
+        let peers_override = Some(threshold_material.peer_set.clone());
+        let (node, storage, temp_dir) = create_node_setup_with_threshold(
+            identity,
+            p2p_config,
+            consensus_config.clone(),
+            threshold_signer,
+            peers_override,
+            node_logger,
+        );
         nodes.push(node);
         store_with_dirs.push((storage, temp_dir));
     }
@@ -1341,7 +1340,7 @@ fn test_multi_node_crashed_replica() {
     });
 }
 
-use consensus::consensus::ConsensusMessage;
+use consensus::consensus::{BlockProposal, ConsensusMessage};
 use consensus::crypto::consensus_bls::PeerId;
 
 /// Node setup for a Byzantine node (no running consensus engine, giving capabilities to test).
@@ -1354,12 +1353,14 @@ struct ByzantineNodeSetup<const N: usize, const F: usize, const M_SIZE: usize> {
     // Keys to sign malicious messages
     bls_secret_key: BlsSecretKey,
     peer_id: PeerId,
+    threshold_signer: ThresholdSignerContext,
 }
 
 /// Creates a byzantine node setup (no consensus engine).
 fn create_byzantine_node_setup<const N: usize, const F: usize, const M_SIZE: usize>(
     identity: ValidatorIdentity,
     p2p_config: P2PConfig,
+    threshold_signer: ThresholdSignerContext,
     logger: Logger,
 ) -> (
     ByzantineNodeSetup<N, F, M_SIZE>,
@@ -1416,6 +1417,7 @@ fn create_byzantine_node_setup<const N: usize, const F: usize, const M_SIZE: usi
         broadcast_producer,
         bls_secret_key,
         peer_id,
+        threshold_signer,
     };
 
     (node, storage, temp_dir)
@@ -1477,6 +1479,13 @@ fn test_multi_node_equivocating_leader() {
         peers: peer_strs,
         genesis_accounts: genesis_accounts.clone(),
     };
+    let threshold_material = build_threshold_test_material(
+        &identities,
+        N,
+        F,
+        "tests-e2e-consensus-equivocating-leader",
+    )
+    .expect("build threshold test material");
 
     // Phase 2: P2P Config
     let base_port = 40000u16 + (rand::random::<u16>() % 10000);
@@ -1524,15 +1533,36 @@ fn test_multi_node_equivocating_leader() {
 
         if i == BYZANTINE_LEADER_IDX {
             // Spawn Byzantine node
+            let peer_id = identity.peer_id();
+            let threshold_signer = threshold_material
+                .signer_by_peer_id
+                .get(&peer_id)
+                .cloned()
+                .expect("threshold signer must exist for byzantine node");
             let (node, storage, temp_dir) =
-                create_byzantine_node_setup(identity, p2p_config, node_logger);
+                create_byzantine_node_setup(identity, p2p_config, threshold_signer, node_logger);
             byzantine_node = Some(node);
             store_with_dirs.push((storage, temp_dir));
             nodes.push(None); // Placeholder in vector
         } else {
             // Spawn Honest node
-            let (node, storage, temp_dir) =
-                create_node_setup(identity, p2p_config, consensus_config.clone(), node_logger);
+            let peer_id = identity.peer_id();
+            let threshold_signer = Some(
+                threshold_material
+                    .signer_by_peer_id
+                    .get(&peer_id)
+                    .cloned()
+                    .expect("threshold signer must exist for honest node"),
+            );
+            let peers_override = Some(threshold_material.peer_set.clone());
+            let (node, storage, temp_dir) = create_node_setup_with_threshold(
+                identity,
+                p2p_config,
+                consensus_config.clone(),
+                threshold_signer,
+                peers_override,
+                node_logger,
+            );
             nodes.push(Some(node));
             store_with_dirs.push((storage, temp_dir));
         }
@@ -1578,6 +1608,12 @@ fn test_multi_node_equivocating_leader() {
 
         let byz_id = byzantine_node.peer_id;
         let byz_sk = &byzantine_node.bls_secret_key;
+        let byz_threshold_participant = byzantine_node.threshold_signer.participant_index();
+        slog::info!(
+            logger,
+            "Byzantine signer context";
+            "participant_index" => byz_threshold_participant,
+        );
 
         // Block A
         let block_a = Block::new(
@@ -1602,19 +1638,45 @@ fn test_multi_node_equivocating_leader() {
             1,
         );
 
+        let block_a_hash = block_a.get_hash();
+        let block_a_m_signature = byzantine_node
+            .threshold_signer
+            .partial_sign(ThresholdDomain::MNotarization, &block_a_hash)
+            .expect("create byzantine M-signature for block A");
+        let block_a_l_signature = byzantine_node
+            .threshold_signer
+            .partial_sign(ThresholdDomain::LNotarization, &block_a_hash)
+            .expect("create byzantine L-signature for block A");
         // Broadcast A
         byzantine_node
             .broadcast_producer
-            .push(ConsensusMessage::BlockProposal(block_a.clone()))
+            .push(ConsensusMessage::BlockProposal(BlockProposal::new(
+                block_a.clone(),
+                block_a_m_signature,
+                block_a_l_signature,
+            )))
             .unwrap();
 
         // Small delay
         ctx.sleep(Duration::from_millis(10)).await;
 
+        let block_b_hash = block_b.get_hash();
+        let block_b_m_signature = byzantine_node
+            .threshold_signer
+            .partial_sign(ThresholdDomain::MNotarization, &block_b_hash)
+            .expect("create byzantine M-signature for block B");
+        let block_b_l_signature = byzantine_node
+            .threshold_signer
+            .partial_sign(ThresholdDomain::LNotarization, &block_b_hash)
+            .expect("create byzantine L-signature for block B");
         // Broadcast B
         byzantine_node
             .broadcast_producer
-            .push(ConsensusMessage::BlockProposal(block_b.clone()))
+            .push(ConsensusMessage::BlockProposal(BlockProposal::new(
+                block_b.clone(),
+                block_b_m_signature,
+                block_b_l_signature,
+            )))
             .unwrap();
 
         slog::info!(logger, "Equivocation proposals sent");
@@ -1828,6 +1890,13 @@ fn test_multi_node_invalid_tx_rejection() {
         peers: peer_strs,
         genesis_accounts: genesis_accounts.clone(),
     };
+    let threshold_material = build_threshold_test_material(
+        &identities,
+        N,
+        F,
+        "tests-e2e-consensus-invalid-tx-rejection",
+    )
+    .expect("build threshold test material");
 
     let base_port = 40000u16 + (rand::random::<u16>() % 10000);
     let port_gap = 100u16;
@@ -1868,9 +1937,24 @@ fn test_multi_node_invalid_tx_rejection() {
         .zip(p2p_configs.into_iter())
         .enumerate()
     {
-        let node_logger = logger.new(o!("node" => i, "peer_id" => identity.peer_id()));
-        let (node, storage, temp_dir) =
-            create_node_setup(identity, p2p_config, consensus_config.clone(), node_logger);
+        let peer_id = identity.peer_id();
+        let node_logger = logger.new(o!("node" => i, "peer_id" => peer_id));
+        let threshold_signer = Some(
+            threshold_material
+                .signer_by_peer_id
+                .get(&peer_id)
+                .cloned()
+                .expect("threshold signer must exist for honest node"),
+        );
+        let peers_override = Some(threshold_material.peer_set.clone());
+        let (node, storage, temp_dir) = create_node_setup_with_threshold(
+            identity,
+            p2p_config,
+            consensus_config.clone(),
+            threshold_signer,
+            peers_override,
+            node_logger,
+        );
         nodes.push(node);
         store_with_dirs.push((storage, temp_dir));
     }
@@ -2065,6 +2149,13 @@ fn test_multi_node_invalid_block_from_leader() {
         peers: peer_strs,
         genesis_accounts: genesis_accounts.clone(),
     };
+    let threshold_material = build_threshold_test_material(
+        &identities,
+        N,
+        F,
+        "tests-e2e-consensus-invalid-block-from-leader",
+    )
+    .expect("build threshold test material");
 
     // Phase 2: P2P Config
     let base_port = 40000u16 + (rand::random::<u16>() % 10000);
@@ -2110,14 +2201,35 @@ fn test_multi_node_invalid_block_from_leader() {
         let node_logger = logger.new(o!("node" => i, "peer_id" => identity.peer_id()));
 
         if i == BYZANTINE_LEADER_IDX {
+            let peer_id = identity.peer_id();
+            let threshold_signer = threshold_material
+                .signer_by_peer_id
+                .get(&peer_id)
+                .cloned()
+                .expect("threshold signer must exist for byzantine node");
             let (node, storage, temp_dir) =
-                create_byzantine_node_setup(identity, p2p_config, node_logger);
+                create_byzantine_node_setup(identity, p2p_config, threshold_signer, node_logger);
             byzantine_node = Some(node);
             store_with_dirs.push((storage, temp_dir));
             nodes.push(None);
         } else {
-            let (node, storage, temp_dir) =
-                create_node_setup(identity, p2p_config, consensus_config.clone(), node_logger);
+            let peer_id = identity.peer_id();
+            let threshold_signer = Some(
+                threshold_material
+                    .signer_by_peer_id
+                    .get(&peer_id)
+                    .cloned()
+                    .expect("threshold signer must exist for honest node"),
+            );
+            let peers_override = Some(threshold_material.peer_set.clone());
+            let (node, storage, temp_dir) = create_node_setup_with_threshold(
+                identity,
+                p2p_config,
+                consensus_config.clone(),
+                threshold_signer,
+                peers_override,
+                node_logger,
+            );
             nodes.push(Some(node));
             store_with_dirs.push((storage, temp_dir));
         }
@@ -2158,6 +2270,12 @@ fn test_multi_node_invalid_block_from_leader() {
 
         let byz_id = byzantine_node.peer_id;
         let byz_sk = &byzantine_node.bls_secret_key;
+        let byz_threshold_participant = byzantine_node.threshold_signer.participant_index();
+        slog::info!(
+            logger,
+            "Byzantine signer context";
+            "participant_index" => byz_threshold_participant,
+        );
 
         // Create invalid tx (Insufficient Funds)
         let (sender_sk, sender_pk) = &user_keys[0];
@@ -2187,11 +2305,22 @@ fn test_multi_node_invalid_block_from_leader() {
         );
 
         let invalid_block_hash = invalid_block.get_hash();
-
+        let invalid_block_m_signature = byzantine_node
+            .threshold_signer
+            .partial_sign(ThresholdDomain::MNotarization, &invalid_block_hash)
+            .expect("create byzantine M-signature for invalid block");
+        let invalid_block_l_signature = byzantine_node
+            .threshold_signer
+            .partial_sign(ThresholdDomain::LNotarization, &invalid_block_hash)
+            .expect("create byzantine L-signature for invalid block");
         // Broadcast
         byzantine_node
             .broadcast_producer
-            .push(ConsensusMessage::BlockProposal(invalid_block.clone()))
+            .push(ConsensusMessage::BlockProposal(BlockProposal::new(
+                invalid_block.clone(),
+                invalid_block_m_signature,
+                invalid_block_l_signature,
+            )))
             .unwrap();
 
         slog::info!(logger, "Invalid block proposal sent"; "block_hash" => ?invalid_block_hash);

@@ -212,7 +212,7 @@ use rtrb::{Consumer, Producer};
 use visualizer::DashboardMetrics;
 
 use crate::{
-    consensus::ConsensusMessage,
+    consensus::{BlockProposal, ConsensusMessage},
     consensus_manager::{events::ViewProgressEvent, view_manager::ViewProgressManager},
     crypto::consensus_bls::{BlsSecretKey, PeerId, ThresholdDomain, ThresholdSignerContext},
     mempool::{FinalizedNotification, ProposalRequest, ProposalResponse},
@@ -923,19 +923,20 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 .store(block.transactions.len() as u64, Ordering::Relaxed);
         }
 
+        let leader_m_signature =
+            self.sign_hot_path_payload(ThresholdDomain::MNotarization, &block_hash)?;
+        let leader_l_signature =
+            self.sign_hot_path_payload(ThresholdDomain::LNotarization, &block_hash)?;
+        let proposal = BlockProposal::new(block.clone(), leader_m_signature, leader_l_signature);
+
         // Broadcast the block proposal to the network layer (to be received by other replicas)
-        self.broadcast_consensus_message(ConsensusMessage::BlockProposal(block.clone()))?;
+        self.broadcast_consensus_message(ConsensusMessage::BlockProposal(proposal.clone()))?;
 
         // Manually process the block proposal locally to avoid redundant vote broadcasting.
         // The leader's block proposal implicitly counts as a vote.
         let event = self
             .view_manager
-            .process_consensus_msg(ConsensusMessage::BlockProposal(block))?;
-
-        let local_vote_signature =
-            self.sign_hot_path_payload(ThresholdDomain::MNotarization, &block_hash)?;
-        let local_l_vote_signature =
-            self.sign_hot_path_payload(ThresholdDomain::LNotarization, &block_hash)?;
+            .process_consensus_msg(ConsensusMessage::BlockProposal(proposal))?;
 
         match event {
             ViewProgressEvent::ShouldVote { view, block_hash } => {
@@ -948,20 +949,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 self.view_manager.add_own_vote_with_l_signature(
                     view,
                     block_hash,
-                    local_vote_signature,
-                    local_l_vote_signature,
+                    leader_m_signature,
+                    leader_l_signature,
                 )?;
-                if self.threshold_signer.is_some() {
-                    let vote = Vote::new_with_threshold_signatures(
-                        view,
-                        block_hash,
-                        local_vote_signature,
-                        local_l_vote_signature,
-                        self.view_manager.replica_id(),
-                        self.view_manager.leader_for_view(view)?,
-                    );
-                    self.broadcast_consensus_message(ConsensusMessage::Vote(vote))?;
-                }
             }
             ViewProgressEvent::ShouldVoteAndMNotarize {
                 view,
@@ -975,20 +965,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 self.view_manager.add_own_vote_with_l_signature(
                     view,
                     block_hash,
-                    local_vote_signature,
-                    local_l_vote_signature,
+                    leader_m_signature,
+                    leader_l_signature,
                 )?;
-                if self.threshold_signer.is_some() {
-                    let vote = Vote::new_with_threshold_signatures(
-                        view,
-                        block_hash,
-                        local_vote_signature,
-                        local_l_vote_signature,
-                        self.view_manager.replica_id(),
-                        self.view_manager.leader_for_view(view)?,
-                    );
-                    self.broadcast_consensus_message(ConsensusMessage::Vote(vote))?;
-                }
                 self.create_and_broadcast_m_notarization(
                     view,
                     block_hash,
@@ -1003,20 +982,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ConsensusStateMachine<
                 self.view_manager.add_own_vote_with_l_signature(
                     view,
                     block_hash,
-                    local_vote_signature,
-                    local_l_vote_signature,
+                    leader_m_signature,
+                    leader_l_signature,
                 )?;
-                if self.threshold_signer.is_some() {
-                    let vote = Vote::new_with_threshold_signatures(
-                        view,
-                        block_hash,
-                        local_vote_signature,
-                        local_l_vote_signature,
-                        self.view_manager.replica_id(),
-                        self.view_manager.leader_for_view(view)?,
-                    );
-                    self.broadcast_consensus_message(ConsensusMessage::Vote(vote))?;
-                }
                 self.finalize_view(view, block_hash)?;
             }
             // Fallback for other events

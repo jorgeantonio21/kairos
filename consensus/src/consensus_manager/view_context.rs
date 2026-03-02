@@ -374,6 +374,10 @@ pub struct ViewContext<const N: usize, const F: usize, const M_SIZE: usize> {
 
     /// Pending block proposal awaiting parent notarization
     pub pending_block: Option<Block>,
+    /// Pending leader M-domain threshold partial for the pending block.
+    pub pending_leader_m_signature: Option<ThresholdPartialSignature>,
+    /// Pending leader L-domain threshold partial for the pending block.
+    pub pending_leader_l_signature: Option<ThresholdPartialSignature>,
 }
 
 impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SIZE> {
@@ -403,6 +407,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             state_diff: None,
             leader_id,
             pending_block: None,
+            pending_leader_m_signature: None,
+            pending_leader_l_signature: None,
         }
     }
 
@@ -416,6 +422,25 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
     pub fn add_new_view_block(
         &mut self,
         block: Block,
+        state_diff: Arc<StateDiff>,
+        peers: &PeerSet,
+    ) -> Result<LeaderProposalResult> {
+        let leader_partial = ThresholdPartialSignature(block.leader_signature);
+        self.add_new_view_block_with_leader_vote(
+            block,
+            leader_partial,
+            leader_partial,
+            state_diff,
+            peers,
+        )
+    }
+
+    /// Adds a proposed block with explicit leader implicit-vote threshold signatures.
+    pub fn add_new_view_block_with_leader_vote(
+        &mut self,
+        block: Block,
+        leader_m_signature: ThresholdPartialSignature,
+        leader_l_signature: ThresholdPartialSignature,
         state_diff: Arc<StateDiff>,
         peers: &PeerSet,
     ) -> Result<LeaderProposalResult> {
@@ -459,6 +484,36 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             ));
         }
 
+        let is_legacy_implicit_vote = leader_m_signature.0 == block.leader_signature
+            && leader_l_signature.0 == block.leader_signature;
+
+        if !is_legacy_implicit_vote {
+            let m_domain = peers
+                .m_not_domain
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing M-notarization domain configuration in peer set"))?;
+            let l_domain = peers
+                .l_not_domain
+                .as_ref()
+                .ok_or_else(|| anyhow!("missing L-notarization domain configuration in peer set"))?;
+            let mut m_message = Vec::with_capacity(m_domain.len() + block_hash.len());
+            m_message.extend_from_slice(m_domain);
+            m_message.extend_from_slice(&block_hash);
+            let mut l_message = Vec::with_capacity(l_domain.len() + block_hash.len());
+            l_message.extend_from_slice(l_domain);
+            l_message.extend_from_slice(&block_hash);
+            let m_share_key = peers.get_m_share_public_key(&self.leader_id)?;
+            let l_share_key = peers.get_l_share_public_key(&self.leader_id)?;
+            if !leader_m_signature.verify(m_share_key, &m_message)
+                || !leader_l_signature.verify(l_share_key, &l_message)
+            {
+                return Err(anyhow!(
+                    "Leader implicit vote threshold signatures are not valid for leader {}",
+                    self.leader_id
+                ));
+            }
+        }
+
         if let Some(ref m_not) = self.m_notarization
             && m_not.block_hash != block_hash
         {
@@ -481,35 +536,15 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
         self.block = Some(block);
         self.state_diff = Some(state_diff);
 
-        // In tests, legacy fixtures without threshold domains still use implicit leader-vote
-        // semantics. Threshold-enabled tests must not inject a full-key leader signature as a
-        // threshold partial.
-        #[cfg(test)]
-        if peers
-            .m_not_domain
-            .as_ref()
-            .is_some_and(std::vec::Vec::is_empty)
-            && peers
-                .l_not_domain
-                .as_ref()
-                .is_some_and(std::vec::Vec::is_empty)
-        {
-            let block_signature = self
-                .block
-                .as_ref()
-                .map(|value| value.leader_signature)
-                .ok_or_else(|| anyhow::anyhow!("block unexpectedly missing in view context"))?;
-            let leader_partial = ThresholdPartialSignature(block_signature);
-            let leader_vote = Vote::new_with_threshold_signatures(
-                self.view_number,
-                block_hash,
-                leader_partial,
-                leader_partial,
-                self.leader_id,
-                self.leader_id,
-            );
-            self.votes.insert(leader_vote);
-        }
+        let leader_vote = Vote::new_with_threshold_signatures(
+            self.view_number,
+            block_hash,
+            leader_m_signature,
+            leader_l_signature,
+            self.leader_id,
+            self.leader_id,
+        );
+        self.votes.insert(leader_vote);
 
         if !self.non_verified_votes.is_empty() {
             let mut num_matching_votes = 0;

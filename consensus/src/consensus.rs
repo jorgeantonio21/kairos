@@ -1,10 +1,48 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
+use crate::crypto::consensus_bls::ThresholdPartialSignature;
 use crate::state::{
     block::Block,
     notarizations::{MNotarization, Vote},
     nullify::{Nullification, Nullify},
 };
+
+/// Block proposal payload broadcast by the leader.
+///
+/// Carries both:
+/// - the block proposal authenticated by `block.leader_signature`
+/// - the leader's implicit threshold vote partials for M/L notarization domains
+#[derive(Clone, Debug, Archive, Deserialize, Serialize)]
+pub struct BlockProposal {
+    pub block: Block,
+    pub leader_m_signature: ThresholdPartialSignature,
+    pub leader_l_signature: ThresholdPartialSignature,
+}
+
+impl BlockProposal {
+    pub fn new(
+        block: Block,
+        leader_m_signature: ThresholdPartialSignature,
+        leader_l_signature: ThresholdPartialSignature,
+    ) -> Self {
+        Self {
+            block,
+            leader_m_signature,
+            leader_l_signature,
+        }
+    }
+}
+
+impl From<Block> for BlockProposal {
+    fn from(block: Block) -> Self {
+        let leader_partial = ThresholdPartialSignature(block.leader_signature);
+        Self {
+            block,
+            leader_m_signature: leader_partial,
+            leader_l_signature: leader_partial,
+        }
+    }
+}
 
 /// [`ConsensusMessage`] represents a message in the consensus protocol.
 ///
@@ -18,7 +56,7 @@ use crate::state::{
 /// - A block recovery request/response for fetching missing blocks from peers
 #[derive(Clone, Debug, Archive, Deserialize, Serialize)]
 pub enum ConsensusMessage<const N: usize, const F: usize, const M_SIZE: usize> {
-    BlockProposal(Block),
+    BlockProposal(BlockProposal),
     Vote(Vote),
     Nullify(Nullify),
     MNotarization(MNotarization<N, F, M_SIZE>),

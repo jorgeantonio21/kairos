@@ -371,7 +371,7 @@ use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
 use anyhow::Result;
 
 use crate::{
-    consensus::ConsensusMessage,
+    consensus::{BlockProposal, ConsensusMessage},
     consensus_manager::{
         config::ConsensusConfig,
         events::ViewProgressEvent,
@@ -646,7 +646,9 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
         consensus_message: ConsensusMessage<N, F, M_SIZE>,
     ) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
         match consensus_message {
-            ConsensusMessage::BlockProposal(block) => self.handle_block_proposal(block),
+            ConsensusMessage::BlockProposal(proposal) => {
+                self.handle_block_proposal_message(proposal)
+            }
             ConsensusMessage::Vote(vote) => self.handle_vote(vote),
             ConsensusMessage::Nullify(nullify) => self.handle_nullify(nullify),
             ConsensusMessage::MNotarization(m_notarization) => {
@@ -1148,7 +1150,27 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
     ///
     /// Routes to view chain; only checks if we need to update to a future view.
     /// All other validation is delegated to [`ViewChain`]/[`ViewContext`].
+    fn handle_block_proposal_message(
+        &mut self,
+        proposal: BlockProposal,
+    ) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
+        let block = proposal.block;
+        let leader_m_signature = proposal.leader_m_signature;
+        let leader_l_signature = proposal.leader_l_signature;
+        self.handle_block_proposal_with_leader_vote(block, leader_m_signature, leader_l_signature)
+    }
+
     fn handle_block_proposal(&mut self, block: Block) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
+        let leader_partial = ThresholdPartialSignature(block.leader_signature);
+        self.handle_block_proposal_with_leader_vote(block, leader_partial, leader_partial)
+    }
+
+    fn handle_block_proposal_with_leader_vote(
+        &mut self,
+        block: Block,
+        leader_m_signature: ThresholdPartialSignature,
+        leader_l_signature: ThresholdPartialSignature,
+    ) -> Result<ViewProgressEvent<N, F, M_SIZE>> {
         let current_view_number = self.view_chain.current_view_number();
         let block_view_number = block.header.view;
 
@@ -1198,9 +1220,11 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewProgressManager<N,
             should_await,
             should_vote,
             should_nullify,
-        } = self.view_chain.add_block_proposal(
+        } = self.view_chain.add_block_proposal_with_leader_vote(
             block_view_number,
             block,
+            leader_m_signature,
+            leader_l_signature,
             Arc::new(state_diff),
             &self.peers,
         )?;
@@ -4425,7 +4449,7 @@ mod tests {
         let leader_id = setup.peer_set.sorted_peer_ids[1];
         let leader_sk = setup.peer_id_to_secret_key.get(&leader_id).unwrap();
         let block = create_test_block(1, leader_id, Block::genesis_hash(), leader_sk.clone(), 1);
-        let msg = ConsensusMessage::BlockProposal(block);
+        let msg = ConsensusMessage::BlockProposal(block.into());
 
         let result = manager.process_consensus_msg(msg);
         assert!(result.is_ok());

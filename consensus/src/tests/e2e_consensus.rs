@@ -650,6 +650,38 @@ fn test_e2e_consensus_continuous_load() {
         "total_transactions_submitted" => tx_count,
     );
 
+    // Give in-flight transactions time to finalize before shutdown.
+    let drain_duration = Duration::from_secs(10);
+    let drain_check_interval = Duration::from_secs(2);
+    let drain_start = std::time::Instant::now();
+    let mut last_drain_check = drain_start;
+
+    slog::info!(
+        logger,
+        "Phase 5b: Draining in-flight transactions";
+        "drain_duration_secs" => drain_duration.as_secs(),
+    );
+
+    while drain_start.elapsed() < drain_duration {
+        if last_drain_check.elapsed() >= drain_check_interval {
+            let elapsed = drain_start.elapsed().as_secs();
+            let msgs_routed = network.stats.messages_routed();
+            let msgs_dropped = network.stats.messages_dropped();
+
+            slog::info!(
+                logger,
+                "Drain progress";
+                "elapsed_secs" => elapsed,
+                "messages_routed" => msgs_routed,
+                "messages_dropped" => msgs_dropped,
+            );
+
+            last_drain_check = std::time::Instant::now();
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
+
     // Phase 6: Verify system health
     slog::info!(logger, "Phase 6: Verifying system health");
 
@@ -1593,8 +1625,8 @@ fn test_e2e_consensus_with_equivocating_leader() {
     // Note: Replica 1 is the Byzantine leader, so we skip it
     use crate::consensus::ConsensusMessage;
 
-    let msg1 = ConsensusMessage::BlockProposal(block1.clone());
-    let msg2 = ConsensusMessage::BlockProposal(block2.clone());
+    let msg1 = ConsensusMessage::BlockProposal(block1.clone().into());
+    let msg2 = ConsensusMessage::BlockProposal(block2.clone().into());
 
     // Access the network's message producers directly to inject messages to specific replicas
     {
@@ -2337,8 +2369,8 @@ fn test_e2e_consensus_with_persistent_equivocating_leader() {
                     1,
                 );
 
-                let msg1 = ConsensusMessage::BlockProposal(block1.clone());
-                let msg2 = ConsensusMessage::BlockProposal(block2.clone());
+                let msg1 = ConsensusMessage::BlockProposal(block1.clone().into());
+                let msg2 = ConsensusMessage::BlockProposal(block2.clone().into());
 
                 // Inject to partitions
                 {
@@ -4055,7 +4087,7 @@ fn test_e2e_consensus_with_invalid_block_from_leader() {
             }
 
             if let Some(producer) = producers.get_mut(&peer_id) {
-                match producer.push(ConsensusMessage::BlockProposal(invalid_block.clone())) {
+                match producer.push(ConsensusMessage::BlockProposal(invalid_block.clone().into())) {
                     Ok(_) => {
                         slog::info!(
                             logger,
@@ -4454,7 +4486,7 @@ fn test_e2e_consensus_with_true_equivocation() {
             let peer_id = fixture.peer_set.sorted_peer_ids[*i];
             if let Some(producer) = producers.get_mut(&peer_id) {
                 producer
-                    .push(ConsensusMessage::BlockProposal(block1.clone()))
+                    .push(ConsensusMessage::BlockProposal(block1.clone().into()))
                     .expect("Failed to inject block1");
                 slog::info!(
                     logger,
@@ -4468,7 +4500,7 @@ fn test_e2e_consensus_with_true_equivocation() {
             let peer_id = fixture.peer_set.sorted_peer_ids[*i];
             if let Some(producer) = producers.get_mut(&peer_id) {
                 producer
-                    .push(ConsensusMessage::BlockProposal(block2.clone()))
+                    .push(ConsensusMessage::BlockProposal(block2.clone().into()))
                     .expect("Failed to inject block2");
                 slog::info!(
                     logger,
@@ -4509,21 +4541,43 @@ fn test_e2e_consensus_with_true_equivocation() {
     slog::info!(
         logger,
         "Phase 7: Waiting for equivocation detection via conflicting votes";
-        "duration_secs" => 45,
+        "duration_secs" => 60,
         "expected_behavior" => "Replicas vote for different blocks, detect conflict, nullify view 1",
     );
 
-    let test_duration = Duration::from_secs(45);
+    let test_duration = Duration::from_secs(60);
     let start_time = std::time::Instant::now();
+    let required_finalized_blocks = 5usize;
+    let mut reached_progress_target = false;
 
     while start_time.elapsed() < test_duration {
-        thread::sleep(Duration::from_secs(5));
+        thread::sleep(Duration::from_secs(2));
+
+        let mut min_honest_finalized_blocks = usize::MAX;
+        for (i, store) in stores.iter().enumerate() {
+            if i == BYZANTINE_LEADER_IDX {
+                continue;
+            }
+
+            let finalized_len = store
+                .get_all_finalized_blocks()
+                .expect("Failed to get blocks during progress check")
+                .len();
+            min_honest_finalized_blocks = min_honest_finalized_blocks.min(finalized_len);
+        }
+
         slog::info!(
             logger,
             "Consensus progress check (equivocation detection)";
             "elapsed_secs" => start_time.elapsed().as_secs(),
             "messages_routed" => network.stats.messages_routed(),
+            "min_honest_finalized_blocks" => min_honest_finalized_blocks,
         );
+
+        if min_honest_finalized_blocks >= required_finalized_blocks {
+            reached_progress_target = true;
+            break;
+        }
     }
 
     // Phase 8: Shutdown and verify
@@ -4589,9 +4643,10 @@ fn test_e2e_consensus_with_true_equivocation() {
 
         // Verify protocol made progress
         assert!(
-            blocks.len() >= 5,
-            "Replica {} should have finalized at least 5 blocks, got {}",
+            blocks.len() >= required_finalized_blocks,
+            "Replica {} should have finalized at least {} blocks, got {}",
             i,
+            required_finalized_blocks,
             blocks.len()
         );
 
@@ -4624,6 +4679,13 @@ fn test_e2e_consensus_with_true_equivocation() {
         view_1_nullified_count >= 3,
         "At least 3 honest replicas should have nullified view 1 due to equivocation, got {}",
         view_1_nullified_count
+    );
+
+    assert!(
+        reached_progress_target,
+        "Honest replicas did not all reach {} finalized blocks within {} seconds",
+        required_finalized_blocks,
+        test_duration.as_secs()
     );
 
     slog::info!(

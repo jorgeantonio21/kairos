@@ -54,7 +54,7 @@ use crate::{
         CollectedNullificationsResult, CollectedVotesResult, LeaderProposalResult, ShouldMNotarize,
         ViewContext,
     },
-    crypto::consensus_bls::ThresholdProof,
+    crypto::consensus_bls::{ThresholdPartialSignature, ThresholdProof},
     state::{
         block::Block,
         leader::Leader,
@@ -452,6 +452,27 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         state_diff: Arc<StateDiff>,
         peers: &PeerSet,
     ) -> Result<LeaderProposalResult> {
+        let leader_partial = ThresholdPartialSignature(block.leader_signature);
+        self.add_block_proposal_with_leader_vote(
+            view_number,
+            block,
+            leader_partial,
+            leader_partial,
+            state_diff,
+            peers,
+        )
+    }
+
+    /// Adds a block proposal, including leader implicit vote threshold signatures.
+    pub fn add_block_proposal_with_leader_vote(
+        &mut self,
+        view_number: u64,
+        block: Block,
+        leader_m_signature: ThresholdPartialSignature,
+        leader_l_signature: ThresholdPartialSignature,
+        state_diff: Arc<StateDiff>,
+        peers: &PeerSet,
+    ) -> Result<LeaderProposalResult> {
         // Check if view exists in non-finalized views
         let ctx = self
             .non_finalized_views
@@ -532,6 +553,8 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
             // Store block and state_diff for later processing when parent gets notarized
             let block_hash = block.get_hash();
             ctx.pending_block = Some(block);
+            ctx.pending_leader_m_signature = Some(leader_m_signature);
+            ctx.pending_leader_l_signature = Some(leader_l_signature);
             ctx.state_diff = Some(state_diff);
             return Ok(LeaderProposalResult {
                 block_hash,
@@ -545,7 +568,13 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         }
 
         // Add block to the view context
-        let result = ctx.add_new_view_block(block, state_diff, peers);
+        let result = ctx.add_new_view_block_with_leader_vote(
+            block,
+            leader_m_signature,
+            leader_l_signature,
+            state_diff,
+            peers,
+        );
 
         // If this view already has M-notarization (block arrived after votes crossed
         // the threshold via network messages), retroactively publish the StateDiff
@@ -1483,21 +1512,56 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
         peers: &PeerSet,
     ) -> Result<Vec<LeaderProposalResult>> {
         let mut results = vec![];
-        let mut pending: Vec<(u64, Block, Arc<StateDiff>)> = vec![];
+        let mut pending: Vec<(
+            u64,
+            Block,
+            ThresholdPartialSignature,
+            ThresholdPartialSignature,
+            Arc<StateDiff>,
+        )> = vec![];
 
         // First, collect all pending blocks
         for (view_number, ctx) in &mut self.non_finalized_views {
-            if *view_number > notarized_view
-                && let Some(block) = ctx.pending_block.take()
-                && let Some(state_diff) = ctx.state_diff.take()
-            {
-                pending.push((*view_number, block, state_diff));
+            if *view_number <= notarized_view {
+                continue;
             }
+            let Some(block) = ctx.pending_block.take() else {
+                continue;
+            };
+            let leader_m_signature = ctx.pending_leader_m_signature.take().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Pending block for view {} is missing leader M-signature",
+                    view_number
+                )
+            })?;
+            let leader_l_signature = ctx.pending_leader_l_signature.take().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Pending block for view {} is missing leader L-signature",
+                    view_number
+                )
+            })?;
+            let state_diff = ctx.state_diff.take().ok_or_else(|| {
+                anyhow::anyhow!("Pending block for view {} is missing state diff", view_number)
+            })?;
+            pending.push((
+                *view_number,
+                block,
+                leader_m_signature,
+                leader_l_signature,
+                state_diff,
+            ));
         }
 
         // Then process them (this avoids borrow checker issues)
-        for (view_number, block, state_diff) in pending {
-            let result = self.add_block_proposal(view_number, block, state_diff, peers)?;
+        for (view_number, block, leader_m_signature, leader_l_signature, state_diff) in pending {
+            let result = self.add_block_proposal_with_leader_vote(
+                view_number,
+                block,
+                leader_m_signature,
+                leader_l_signature,
+                state_diff,
+                peers,
+            )?;
             results.push(result);
         }
 

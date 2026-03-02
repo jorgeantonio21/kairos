@@ -31,10 +31,17 @@ use commonware_runtime::Runner;
 use commonware_runtime::tokio::Runner as TokioRunner;
 use consensus::crypto::consensus_bls::BlsSecretKey;
 use consensus::metrics::ConsensusMetrics;
+use crypto::bls::ops::public_key_from_scalar;
+use crypto::dkg::run_in_memory_dual_dkg;
+use crypto::threshold_setup::{
+    ThresholdDomains, ThresholdKeyset, ThresholdKeysets, ThresholdSetupArtifact,
+    ValidatorParticipant,
+};
 use metrics_exporter_prometheus::PrometheusHandle;
 use node::ValidatorNode;
 use node::config::LogFormat;
 use p2p::ValidatorIdentity;
+use rand::SeedableRng;
 
 /// Network size constants
 const N: usize = 6;
@@ -48,6 +55,7 @@ const PORT_GAP: u16 = 100;
 
 /// Fixed seed for deterministic key generation
 const LOCAL_NETWORK_SEED: u64 = 42;
+const LOCAL_THRESHOLD_ARTIFACT_SEED: u64 = 4242;
 
 #[derive(Parser, Debug)]
 #[command(name = "kairos-node")]
@@ -80,6 +88,15 @@ enum Command {
         /// Output directory
         #[arg(short, long, default_value = "node/config")]
         output_dir: PathBuf,
+    },
+    /// Generate threshold setup artifacts for deterministic local validators.
+    GenerateThresholdArtifacts {
+        /// Output directory for per-validator artifact JSON files.
+        #[arg(short, long, default_value = "node/config/threshold")]
+        output_dir: PathBuf,
+        /// Validator set id encoded in artifacts.
+        #[arg(long, default_value = "kairos-local-vs-1")]
+        validator_set_id: String,
     },
 }
 
@@ -128,6 +145,13 @@ fn main() -> Result<()> {
         Command::GenerateConfigs { output_dir } => {
             let logger = create_logger(&args.log_level, &node::config::LoggingConfig::default());
             generate_configs(&output_dir, logger)
+        }
+        Command::GenerateThresholdArtifacts {
+            output_dir,
+            validator_set_id,
+        } => {
+            let logger = create_logger(&args.log_level, &node::config::LoggingConfig::default());
+            generate_threshold_artifacts(&output_dir, &validator_set_id, logger)
         }
     }
 }
@@ -273,7 +297,6 @@ struct PeerInfo {
 
 /// Generate deterministic genesis account keys for testing.
 fn generate_genesis_accounts() -> Vec<(String, u64)> {
-    use rand::SeedableRng;
     // Use a different seed for genesis accounts
     let mut rng = rand::rngs::StdRng::seed_from_u64(1337);
 
@@ -416,8 +439,113 @@ wait
     )
 }
 
+fn generate_threshold_artifacts(
+    output_dir: &std::path::Path,
+    validator_set_id: &str,
+    logger: Logger,
+) -> Result<()> {
+    slog::info!(
+        logger,
+        "Generating threshold artifacts";
+        "output_dir" => %output_dir.display(),
+        "validator_set_id" => validator_set_id,
+    );
+
+    fs::create_dir_all(output_dir)?;
+
+    let identities = generate_deterministic_identities(N);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(LOCAL_THRESHOLD_ARTIFACT_SEED);
+    let dual_dkg =
+        run_in_memory_dual_dkg(N, F, &mut rng).context("failed to generate dual DKG material")?;
+
+    let m_secret_by_index = dual_dkg
+        .m_nullify
+        .participant_shares
+        .iter()
+        .map(|share| (share.participant_index, share.secret_share.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let l_secret_by_index = dual_dkg
+        .l_notarization
+        .participant_shares
+        .iter()
+        .map(|share| (share.participant_index, share.secret_share.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let validators = identities
+        .iter()
+        .enumerate()
+        .map(|(idx, identity)| {
+            let participant_index = (idx + 1) as u64;
+            let m_secret = m_secret_by_index.get(&participant_index).ok_or_else(|| {
+                anyhow::anyhow!("missing M secret share for index {}", participant_index)
+            })?;
+            let l_secret = l_secret_by_index.get(&participant_index).ok_or_else(|| {
+                anyhow::anyhow!("missing L secret share for index {}", participant_index)
+            })?;
+
+            Ok(ValidatorParticipant {
+                peer_id: identity.peer_id(),
+                participant_index,
+                m_share_public_key: hex::encode(public_key_from_scalar(m_secret)?),
+                l_share_public_key: hex::encode(public_key_from_scalar(l_secret)?),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    for idx in 0..N {
+        let participant_index = (idx + 1) as u64;
+        let m_secret = m_secret_by_index
+            .get(&participant_index)
+            .ok_or_else(|| anyhow::anyhow!("missing M secret share for index {}", participant_index))?;
+        let l_secret = l_secret_by_index
+            .get(&participant_index)
+            .ok_or_else(|| anyhow::anyhow!("missing L secret share for index {}", participant_index))?;
+
+        let artifact = ThresholdSetupArtifact {
+            validator_set_id: validator_set_id.to_string(),
+            participant_index,
+            peer_id: identities[idx].peer_id(),
+            n: N,
+            f: F,
+            validators: validators.clone(),
+            domains: ThresholdDomains {
+                m_not: "minimmit/m_not/v1".to_string(),
+                nullify: "minimmit/nullify/v1".to_string(),
+                l_not: "minimmit/l_not/v1".to_string(),
+            },
+            keysets: ThresholdKeysets {
+                m_nullify: ThresholdKeyset {
+                    threshold: 2 * F + 1,
+                    group_public_key: hex::encode(dual_dkg.m_nullify.group_public_key.0),
+                    secret_share: hex::encode(m_secret.to_bytes_le()),
+                },
+                l_notarization: ThresholdKeyset {
+                    threshold: N - F,
+                    group_public_key: hex::encode(dual_dkg.l_notarization.group_public_key.0),
+                    secret_share: hex::encode(l_secret.to_bytes_le()),
+                },
+            },
+        };
+
+        let path = output_dir.join(format!("validator-{}.threshold_setup.json", idx));
+        fs::write(&path, serde_json::to_string_pretty(&artifact)?)?;
+        slog::info!(logger, "Generated threshold artifact"; "file" => %path.display());
+    }
+
+    println!(
+        "M_NULLIFY_GROUP_PUBLIC_KEY={}",
+        hex::encode(dual_dkg.m_nullify.group_public_key.0)
+    );
+    println!(
+        "L_NOTARIZATION_GROUP_PUBLIC_KEY={}",
+        hex::encode(dual_dkg.l_notarization.group_public_key.0)
+    );
+    println!("Artifacts generated in {}", output_dir.display());
+
+    Ok(())
+}
+
 fn generate_deterministic_identities(count: usize) -> Vec<ValidatorIdentity> {
-    use rand::SeedableRng;
     let mut rng = rand::rngs::StdRng::seed_from_u64(LOCAL_NETWORK_SEED);
     (0..count)
         .map(|_| ValidatorIdentity::from_bls_key(BlsSecretKey::generate(&mut rng)))

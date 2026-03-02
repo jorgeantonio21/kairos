@@ -45,6 +45,11 @@ docker compose -f deployments/docker-compose.yml up
 Wait for all five services to become healthy, then open
 **<http://localhost:3000>** in your browser.
 
+Threshold setup notes:
+- Single-node compose now stores threshold artifacts in `deployments/data/threshold/`.
+- On first start, `kairos-node` generates deterministic local artifacts; on subsequent starts it
+  reuses the same artifact files.
+
 For the 6-validator localnet, use the dedicated profile in
 `deployments/localnet/` (see "Multi-Node Local Network" below).
 
@@ -409,6 +414,11 @@ docker compose \
   -f deployments/localnet/localnet.override.yml \
   up -d
 ```
+
+Threshold setup in localnet:
+- `bootstrap-rpc` runs as part of the compose stack.
+- Validators share artifacts via `deployments/localnet/shared/threshold/`.
+- First run bootstraps artifacts; later runs reuse the same files automatically.
 
 Each validator exposes unique ports:
 

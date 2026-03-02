@@ -1,3 +1,43 @@
+//! Bootstrap RPC service for DKG ceremony coordination.
+//!
+//! This module implements the `BootstrapService` gRPC service that coordinates the
+//! Distributed Key Generation (DKG) ceremony among validator nodes. It handles:
+//!
+//! - **Participant Registration**: Validators register with peer IDs and participant indices
+//! - **Commitment Collection**: DKG dealers submit their polynomial commitment bundles
+//! - **Share Distribution**: Dealers submit encrypted shares for each participant
+//! - **Artifact Generation**: Upon successful DKG, generates threshold setup artifacts
+//!
+//! ## DKG Ceremony Flow
+//!
+//! ```text
+//! 1. Register Phase
+//!    └─> Each validator calls RegisterParticipant
+//!
+//! 2. Commitment Phase
+//!    └─> Each validator (as dealer) calls SubmitCommitments
+//!    └─> Must submit for both m_nullify and l_notarization keysets
+//!
+//! 3. Share Submission Phase
+//!    └─> Each validator calls SubmitShares
+//!    └─> Must submit shares for all dealer/recipient pairs
+//!
+//! 4. Finalization Phase
+//!    └─> Any validator calls FinalizeCeremony
+//!    └─> Service computes group public keys and individual secret shares
+//!
+//! 5. Artifact Fetch Phase
+//!    └─> Each validator calls FetchArtifact to retrieve their setup
+//! ```
+//!
+//! ## Threshold Parameters
+//!
+//! The service enforces Minimmit BFT thresholds:
+//! - **M-Notarization**: `2f + 1` votes (view progression)
+//! - **L-Notarization**: `n - f` votes (block finalization)
+//!
+//! With Byzantine assumption `n >= 5f + 1`.
+
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
@@ -20,6 +60,11 @@ use crate::proto::{
     bootstrap_service_server::BootstrapService,
 };
 
+/// Keyset type for dual-threshold DKG.
+///
+/// Minimmit uses two independent threshold keysets:
+/// - **M-Nullify**: For M-notarization (view progression) with threshold `2f + 1`
+/// - **L-Notarization**: For L-notarization (block finalization) with threshold `n - f`
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum KeysetKind {
     MNullify,
@@ -52,14 +97,25 @@ impl KeysetKind {
     }
 }
 
+/// In-memory state for a single DKG ceremony.
+///
+/// Tracks all materials submitted by participants and the finalization status.
+/// State is keyed by `validator_set_id` to support multiple concurrent ceremonies.
 #[derive(Default)]
 struct CeremonyState {
-    participants: BTreeMap<u64, u64>, // peer_id -> participant_index
+    /// Maps peer_id -> participant_index for registered validators.
+    participants: BTreeMap<u64, u64>,
+    /// DKG commitment bundles indexed by (keyset_kind, dealer_index).
     commitments: HashMap<(KeysetKind, u64), Commitment>,
+    /// DKG encrypted shares indexed by (keyset_kind, dealer_index, recipient_index).
     shares: HashMap<(KeysetKind, u64, u64), Share>,
+    /// Computed group public key for M-nullify threshold (set after finalization).
     expected_m_nullify_group_public_key: Option<String>,
+    /// Computed group public key for L-notarization threshold (set after finalization).
     expected_l_notarization_group_public_key: Option<String>,
+    /// Serialized threshold setup artifacts per peer (set after finalization).
     artifacts_by_peer: HashMap<u64, String>,
+    /// Whether the ceremony has been finalized.
     finalized: bool,
 }
 
@@ -67,13 +123,32 @@ struct CeremonyState {
 ///
 /// This service coordinates submissions from validator nodes and finalizes artifacts from those
 /// submitted materials. It does not execute complaint rounds or persistent recovery logic.
+///
+/// ## Thread Safety
+///
+/// All state is protected by async RwLock, allowing concurrent reads and exclusive writes.
+/// The service is cloneable for sharing across tokio tasks.
 #[derive(Default)]
 pub struct BootstrapServiceImpl {
+    /// Map of validator_set_id -> ceremony state.
     states: RwLock<HashMap<String, CeremonyState>>,
 }
 
 #[tonic::async_trait]
 impl BootstrapService for BootstrapServiceImpl {
+    /// Registers a validator participant in the DKG ceremony.
+    ///
+    /// Each validator must register with:
+    /// - `peer_id`: Unique node identifier (must be non-zero)
+    /// - `participant_index`: DKG index in range 1..=n (must be non-zero)
+    ///
+    /// Returns success if:
+    /// - Validator hasn't registered yet
+    /// - Validator re-registers with same participant_index (idempotent)
+    ///
+    /// Returns failure if:
+    /// - peer_id already registered with different participant_index
+    /// - participant_index already in use by another peer
     async fn register_participant(
         &self,
         request: Request<RegisterParticipantRequest>,
@@ -134,6 +209,17 @@ impl BootstrapService for BootstrapServiceImpl {
         }))
     }
 
+    /// Submits DKG commitment bundles from a dealer.
+    ///
+    /// Each validator acts as a dealer and submits polynomial commitments for both keysets.
+    /// The commitment contains the public verification keys needed for share verification.
+    ///
+    /// # Arguments
+    /// - `commitments`: Vector of commitment bundles (must include at least one)
+    ///
+    /// # Returns
+    /// - `accepted: true` if commitments stored successfully
+    /// - `accepted: false` if ceremony already finalized or duplicate submission
     async fn submit_commitments(
         &self,
         request: Request<SubmitCommitmentsRequest>,
@@ -214,6 +300,17 @@ impl BootstrapService for BootstrapServiceImpl {
         }))
     }
 
+    /// Submits DKG encrypted shares from a dealer to all recipients.
+    ///
+    /// Each dealer submits encrypted shares for every registered participant.
+    /// Shares are validated against the previously submitted commitments.
+    ///
+    /// # Arguments
+    /// - `shares`: Vector of share objects (must include at least one)
+    ///
+    /// # Returns
+    /// - `accepted: true` if all shares stored successfully
+    /// - `accepted: false` if ceremony already finalized or duplicate submission
     async fn submit_shares(
         &self,
         request: Request<SubmitSharesRequest>,
@@ -297,6 +394,24 @@ impl BootstrapService for BootstrapServiceImpl {
         }))
     }
 
+    /// Finalizes the DKG ceremony and generates threshold setup artifacts.
+    ///
+    /// This endpoint can be called by any participant after all commitments and shares
+    /// have been submitted. It performs the following:
+    ///
+    /// 1. Validates all submitted materials
+    /// 2. Verifies each share against its commitment
+    /// 3. Aggregates shares to produce each participant's secret share
+    /// 4. Derives group public keys for both thresholds
+    /// 5. Generates per-participant setup artifacts
+    ///
+    /// # Returns
+    /// - `finalized: true` on success with group public keys
+    /// - Group public keys are included for client-side verification
+    ///
+    /// # Errors
+    /// - `NOT_FOUND`: validator_set_id doesn't exist
+    /// - `FAILED_PRECONDITION`: missing participants, commitments, or shares
     async fn finalize_ceremony(
         &self,
         request: Request<FinalizeCeremonyRequest>,
@@ -463,6 +578,17 @@ impl BootstrapService for BootstrapServiceImpl {
         }))
     }
 
+    /// Fetches a participant's threshold setup artifact after finalization.
+    ///
+    /// Each validator calls this to retrieve their personal setup artifact containing:
+    /// - Their secret share for both thresholds
+    /// - Group public keys for both thresholds
+    /// - Validator set configuration
+    /// - Domain separation tags
+    ///
+    /// # Returns
+    /// - `found: true` with `artifact_json` if ceremony finalized and peer registered
+    /// - `found: false` with empty artifact if peer not found (not an error)
     async fn fetch_artifact(
         &self,
         request: Request<FetchArtifactRequest>,
@@ -498,12 +624,25 @@ impl BootstrapService for BootstrapServiceImpl {
     }
 }
 
+/// Output of a finalized DKG keyset.
+///
+/// Contains the derived group public key and per-participant secret shares.
 struct FinalizedKeyset {
+    /// The derived group public key for this threshold.
     group_public_key: BlsPublicKey,
+    /// Each participant's aggregated secret share.
     participant_shares: Vec<ParticipantShare>,
+    /// Each participant's derived public share key.
     participant_public_keys: HashMap<u64, BlsPublicKey>,
 }
 
+/// Executes the DKG finalization for a single keyset.
+///
+/// 1. Collects all commitment bundles from dealers
+/// 2. For each (dealer, recipient) pair, verifies the share against commitments
+/// 3. Aggregates verified shares into each participant's secret share
+/// 4. Derives the group public key from commitments
+/// 5. Derives each participant's public share key
 fn finalize_keyset(
     state: &CeremonyState,
     keyset: KeysetKind,
@@ -657,6 +796,14 @@ fn finalize_keyset(
     })
 }
 
+/// Decodes a hex-encoded scalar value for DKG share.
+///
+/// # Arguments
+/// - `encoded`: Hex string representation of the scalar
+///
+/// # Returns
+/// - Ok(Scalar) if valid 32-byte hex string
+/// - Err(message) if decoding fails
 fn decode_share_scalar(encoded: &str) -> Result<Scalar, String> {
     let decoded = hex::decode(encoded).map_err(|error| error.to_string())?;
     let len = decoded.len();

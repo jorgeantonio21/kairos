@@ -1624,6 +1624,11 @@ mod tests {
             Some(artifact.keysets.l_notarization.group_public_key.as_str())
         );
 
+        // Drop client-side gRPC resources before graceful server shutdown.
+        // `serve_with_shutdown` waits for active connections to drain.
+        drop(client);
+        drop(client_rt);
+
         fs::remove_file(&artifact_file).expect("remove artifact");
         let _ = shutdown_tx.send(());
         server_thread.join().expect("server join");

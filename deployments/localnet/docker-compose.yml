@@ -10,6 +10,9 @@
 
 x-validator: &validator-defaults
   image: kairos-node:latest
+  depends_on:
+    bootstrap-rpc:
+      condition: service_started
   healthcheck:
     test: [ "CMD", "wget", "-q", "--spider", "http://localhost:9090/metrics" ]
     interval: 10s
@@ -26,6 +29,7 @@ services:
       - ./config/nodes/validator-0/node.toml:/etc/kairos/node.toml:ro
       - ./config/nodes/validator-0/keys:/etc/kairos/keys:ro
       - ./data/validator-0:/data
+      - ./shared/threshold:/var/lib/kairos/threshold
     ports:
       - "50051:50051"
       - "9090:9090"
@@ -38,6 +42,7 @@ services:
       - ./config/nodes/validator-1/node.toml:/etc/kairos/node.toml:ro
       - ./config/nodes/validator-1/keys:/etc/kairos/keys:ro
       - ./data/validator-1:/data
+      - ./shared/threshold:/var/lib/kairos/threshold
     ports:
       - "50052:50051"
       - "9092:9090"
@@ -50,6 +55,7 @@ services:
       - ./config/nodes/validator-2/node.toml:/etc/kairos/node.toml:ro
       - ./config/nodes/validator-2/keys:/etc/kairos/keys:ro
       - ./data/validator-2:/data
+      - ./shared/threshold:/var/lib/kairos/threshold
     ports:
       - "50053:50051"
       - "9093:9090"
@@ -62,6 +68,7 @@ services:
       - ./config/nodes/validator-3/node.toml:/etc/kairos/node.toml:ro
       - ./config/nodes/validator-3/keys:/etc/kairos/keys:ro
       - ./data/validator-3:/data
+      - ./shared/threshold:/var/lib/kairos/threshold
     ports:
       - "50054:50051"
       - "9094:9090"
@@ -74,6 +81,7 @@ services:
       - ./config/nodes/validator-4/node.toml:/etc/kairos/node.toml:ro
       - ./config/nodes/validator-4/keys:/etc/kairos/keys:ro
       - ./data/validator-4:/data
+      - ./shared/threshold:/var/lib/kairos/threshold
     ports:
       - "50055:50051"
       - "9095:9090"
@@ -86,6 +94,7 @@ services:
       - ./config/nodes/validator-5/node.toml:/etc/kairos/node.toml:ro
       - ./config/nodes/validator-5/keys:/etc/kairos/keys:ro
       - ./data/validator-5:/data
+      - ./shared/threshold:/var/lib/kairos/threshold
     ports:
       - "50056:50051"
       - "9096:9090"
@@ -158,3 +167,10 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+  bootstrap-rpc:
+    image: kairos-node:latest
+    entrypoint: [ "bootstrap-rpc" ]
+    environment:
+      - BOOTSTRAP_RPC_LISTEN_ADDR=0.0.0.0:7001
+    ports:
+      - "7001:7001"

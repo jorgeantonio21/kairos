@@ -1541,7 +1541,10 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewChain<N, F, M_SIZE
                 )
             })?;
             let state_diff = ctx.state_diff.take().ok_or_else(|| {
-                anyhow::anyhow!("Pending block for view {} is missing state diff", view_number)
+                anyhow::anyhow!(
+                    "Pending block for view {} is missing state diff",
+                    view_number
+                )
             })?;
             pending.push((
                 *view_number,

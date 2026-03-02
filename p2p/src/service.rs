@@ -627,7 +627,7 @@ mod tests {
             false,
             1,
         );
-        let consensus_msg = ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block);
+        let consensus_msg = ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block.into());
 
         // Serialize it
         let p2p_msg = P2PMessage::Consensus(consensus_msg.clone());
@@ -647,7 +647,7 @@ mod tests {
         let received = consensus_cons.pop().unwrap();
         match (received, consensus_msg) {
             (ConsensusMessage::BlockProposal(b1), ConsensusMessage::BlockProposal(b2)) => {
-                assert_eq!(b1.view(), b2.view());
+                assert_eq!(b1.block.view(), b2.block.view());
             }
             _ => panic!("Message type mismatch"),
         }
@@ -708,7 +708,7 @@ mod tests {
             false,
             1,
         );
-        let msg1 = ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block1);
+        let msg1 = ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block1.into());
         consensus_prod.push(msg1).unwrap();
 
         // Try to route another message - should fail with channel full
@@ -723,7 +723,7 @@ mod tests {
             1,
         );
         let p2p_msg =
-            P2PMessage::Consensus(ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block2));
+            P2PMessage::Consensus(ConsensusMessage::<N, F, M_SIZE>::BlockProposal(block2.into()));
         let bytes = crate::message::serialize_message(&p2p_msg).unwrap();
 
         let result = route_incoming_message::<N, F, M_SIZE>(

@@ -488,14 +488,12 @@ impl<const N: usize, const F: usize, const M_SIZE: usize> ViewContext<N, F, M_SI
             && leader_l_signature.0 == block.leader_signature;
 
         if !is_legacy_implicit_vote {
-            let m_domain = peers
-                .m_not_domain
-                .as_ref()
-                .ok_or_else(|| anyhow!("missing M-notarization domain configuration in peer set"))?;
-            let l_domain = peers
-                .l_not_domain
-                .as_ref()
-                .ok_or_else(|| anyhow!("missing L-notarization domain configuration in peer set"))?;
+            let m_domain = peers.m_not_domain.as_ref().ok_or_else(|| {
+                anyhow!("missing M-notarization domain configuration in peer set")
+            })?;
+            let l_domain = peers.l_not_domain.as_ref().ok_or_else(|| {
+                anyhow!("missing L-notarization domain configuration in peer set")
+            })?;
             let mut m_message = Vec::with_capacity(m_domain.len() + block_hash.len());
             m_message.extend_from_slice(m_domain);
             m_message.extend_from_slice(&block_hash);

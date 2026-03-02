@@ -4087,7 +4087,9 @@ fn test_e2e_consensus_with_invalid_block_from_leader() {
             }
 
             if let Some(producer) = producers.get_mut(&peer_id) {
-                match producer.push(ConsensusMessage::BlockProposal(invalid_block.clone().into())) {
+                match producer.push(ConsensusMessage::BlockProposal(
+                    invalid_block.clone().into(),
+                )) {
                     Ok(_) => {
                         slog::info!(
                             logger,

@@ -1161,13 +1161,9 @@ fn test_multi_node_crashed_replica() {
         peers: peer_strs,
         genesis_accounts: genesis_accounts.clone(),
     };
-    let threshold_material = build_threshold_test_material(
-        &identities,
-        N,
-        F,
-        "tests-e2e-consensus-crashed-replica",
-    )
-    .expect("build threshold test material");
+    let threshold_material =
+        build_threshold_test_material(&identities, N, F, "tests-e2e-consensus-crashed-replica")
+            .expect("build threshold test material");
 
     // Phase 2: P2P Config
     let base_port = 40000u16 + (rand::random::<u16>() % 10000);
@@ -1479,13 +1475,9 @@ fn test_multi_node_equivocating_leader() {
         peers: peer_strs,
         genesis_accounts: genesis_accounts.clone(),
     };
-    let threshold_material = build_threshold_test_material(
-        &identities,
-        N,
-        F,
-        "tests-e2e-consensus-equivocating-leader",
-    )
-    .expect("build threshold test material");
+    let threshold_material =
+        build_threshold_test_material(&identities, N, F, "tests-e2e-consensus-equivocating-leader")
+            .expect("build threshold test material");
 
     // Phase 2: P2P Config
     let base_port = 40000u16 + (rand::random::<u16>() % 10000);

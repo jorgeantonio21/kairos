@@ -63,6 +63,50 @@ jobs:
       - name: Build node package
         run: nix build
 
+  perf-gate:
+    name: Consensus Perf Gate Localnet (PR)
+    runs-on: [self-hosted, linux, perf]
+    needs: [test, build]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run consensus performance gate (localnet)
+        env:
+          RUNS: 1
+          ARTIFACTS_DIR: artifacts/consensus-perf-localnet/pr
+          PERF_MEASURE_SECS: 60
+          PERF_WARMUP_SECS: 20
+          LOADGEN_WORKERS: 12
+          LOADGEN_TX_TIMEOUT_SECS: 20
+        run: nix develop --command bash scripts/ci/run_consensus_perf_localnet_gate.sh
+
+      - name: Upload performance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consensus-perf-pr
+          path: artifacts/consensus-perf-localnet/pr
+          if-no-files-found: error
+
+      - name: Publish perf summary
+        if: always()
+        run: |
+          {
+            echo "## Consensus Performance Gate Localnet (PR)"
+            echo ""
+            echo '```'
+            cat artifacts/consensus-perf-localnet/pr/summary.tsv
+            echo '```'
+            echo ""
+            echo "Noise context:"
+            echo '```'
+            cat artifacts/consensus-perf-localnet/pr/noise_context.env
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   e2e:
     name: Consensus E2E Repeated (PR)
     runs-on: ubuntu-latest

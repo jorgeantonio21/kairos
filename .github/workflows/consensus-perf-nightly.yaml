@@ -1,0 +1,53 @@
+name: Consensus Perf Localnet Nightly
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  perf-nightly:
+    name: Consensus Perf Gate Localnet (Nightly)
+    runs-on: [self-hosted, linux, perf]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run consensus performance gate localnet (nightly)
+        env:
+          RUNS: 3
+          ARTIFACTS_DIR: artifacts/consensus-perf-localnet/nightly
+          PERF_MEASURE_SECS: 120
+          PERF_WARMUP_SECS: 30
+          LOADGEN_WORKERS: 16
+          LOADGEN_TX_TIMEOUT_SECS: 20
+        run: nix develop --command bash scripts/ci/run_consensus_perf_localnet_gate.sh
+
+      - name: Upload performance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consensus-perf-nightly
+          path: artifacts/consensus-perf-localnet/nightly
+          if-no-files-found: error
+
+      - name: Publish perf summary
+        if: always()
+        run: |
+          {
+            echo "## Consensus Performance Gate Localnet (Nightly)"
+            echo ""
+            echo '```'
+            cat artifacts/consensus-perf-localnet/nightly/summary.tsv
+            echo '```'
+            echo ""
+            echo "Noise context:"
+            echo '```'
+            cat artifacts/consensus-perf-localnet/nightly/noise_context.env
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -30,4 +30,5 @@
 
 mod e2e_consensus;
 mod network_simulator;
+mod perf_consensus;
 mod test_helpers;

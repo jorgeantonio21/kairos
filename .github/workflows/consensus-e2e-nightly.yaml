@@ -1,0 +1,45 @@
+name: Consensus E2E Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e-nightly:
+    name: Consensus E2E Repeated (Nightly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Run repeated consensus e2e tests (5x each)
+        env:
+          RUNS: 5
+          ARTIFACTS_DIR: artifacts/consensus-e2e/nightly
+          RUST_LOG_LEVEL: info
+        run: nix develop --command bash scripts/ci/run_consensus_e2e_repeated.sh
+
+      - name: Upload consensus e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consensus-e2e-nightly-logs
+          path: artifacts/consensus-e2e/nightly
+          if-no-files-found: error
+
+      - name: Publish e2e summary
+        if: always()
+        run: |
+          {
+            echo "## Consensus E2E Repeated (Nightly)"
+            echo ""
+            echo '```'
+            cat artifacts/consensus-e2e/nightly/summary.tsv
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

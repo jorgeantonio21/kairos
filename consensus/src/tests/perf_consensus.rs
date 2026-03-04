@@ -40,14 +40,19 @@ fn test_perf_consensus_steady_state() {
     let tx_interval_ms = env_usize("PERF_TEST_TX_INTERVAL_MS", 100) as u64;
     let tx_batch_size = env_usize("PERF_TEST_TX_BATCH_SIZE", 1);
 
-    assert!(total_duration_secs > warmup_secs, "duration must be greater than warmup");
+    assert!(
+        total_duration_secs > warmup_secs,
+        "duration must be greater than warmup"
+    );
 
     let total_duration = Duration::from_secs(total_duration_secs);
     let warmup_duration = Duration::from_secs(warmup_secs);
     let tx_interval = Duration::from_millis(tx_interval_ms);
 
-    let fixture_tx_budget = (total_duration_secs * 1000 / tx_interval_ms) as usize * tx_batch_size + 500;
-    let (mut all_transactions, genesis_accounts) = create_funded_test_transactions(fixture_tx_budget);
+    let fixture_tx_budget =
+        (total_duration_secs * 1000 / tx_interval_ms) as usize * tx_batch_size + 500;
+    let (mut all_transactions, genesis_accounts) =
+        create_funded_test_transactions(fixture_tx_budget);
     let fixture = TestFixture::with_genesis_accounts(genesis_accounts);
 
     let mut network = LocalNetwork::<N, F, M_SIZE>::new();
@@ -180,12 +185,18 @@ fn test_perf_consensus_steady_state() {
 
     let measurement_start = measurement_start.expect("measurement window did not start");
     let measurement_duration_secs = measurement_start.elapsed().as_secs_f64();
-    assert!(measurement_duration_secs > 0.0, "measurement duration must be > 0");
+    assert!(
+        measurement_duration_secs > 0.0,
+        "measurement duration must be > 0"
+    );
 
     let blocks = stores[0]
         .get_all_finalized_blocks()
         .expect("failed to read finalized blocks");
-    let end_view = blocks.last().map(|b| b.view()).unwrap_or(start_view_at_measurement);
+    let end_view = blocks
+        .last()
+        .map(|b| b.view())
+        .unwrap_or(start_view_at_measurement);
     let view_delta = end_view.saturating_sub(start_view_at_measurement);
     let views_per_sec = view_delta as f64 / measurement_duration_secs;
 

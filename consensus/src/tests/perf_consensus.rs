@@ -3,10 +3,7 @@
 //! These tests emit machine-readable metrics for CI regression gating.
 
 use super::{e2e_consensus::create_test_logger, network_simulator::LocalNetwork, test_helpers::*};
-use crate::{
-    consensus_manager::consensus_engine::ConsensusEngine, metrics::ConsensusMetrics,
-    state::transaction::Transaction,
-};
+use crate::{consensus_manager::consensus_engine::ConsensusEngine, metrics::ConsensusMetrics};
 use std::{
     collections::{HashMap, HashSet},
     env,
